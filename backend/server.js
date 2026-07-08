@@ -73,10 +73,29 @@ app.post('/api/compile', (req, res) => {
 
     const shortLog = log.split('\n').slice(-60).join('\n')
     res.status(500).json({ error: 'Compilation failed', log: shortLog })
+  } catch (e) {
+    // Never let the handler throw without a response — otherwise the client
+    // gets an empty body and a confusing "Unexpected end of JSON input".
+    if (!res.headersSent) {
+      res.status(500).json({
+        error: 'Server error while compiling',
+        log: String((e && e.stack) || e)
+      })
+    }
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true })
+    try {
+      fs.rmSync(dir, { recursive: true, force: true })
+    } catch {}
   }
 })
 
 const PORT = 3001
-app.listen(PORT, () => console.log(`ResuForge backend running on http://localhost:${PORT}`))
+const server = app.listen(PORT, () => console.log(`ResuForge backend running on http://localhost:${PORT}`))
+
+// A first-time compile can run for a few minutes while MiKTeX downloads
+// packages. Disable Node's request/socket timeouts (default requestTimeout is
+// 300s) so the request isn't aborted mid-compile — the per-run execSync
+// timeout in the handler still bounds how long pdflatex itself can run.
+server.requestTimeout = 0
+server.headersTimeout = 0
+server.timeout = 0

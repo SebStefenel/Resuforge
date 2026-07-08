@@ -191,24 +191,57 @@ export default function App() {
     setCompileError(null)
     try {
       const latex = resolvedLatex()
-      const res = await fetch('/api/compile', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ latex })
-      })
-      if (!res.ok) {
-        const body = await res.json()
-        setCompileError(body.log || body.error || 'Compilation failed')
+
+      // fetch() only rejects when the request never got a response (backend
+      // down, connection reset). Catch that separately so we can point the
+      // user at the backend instead of showing a cryptic parse error.
+      let res
+      try {
+        res = await fetch('/api/compile', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ latex })
+        })
+      } catch (e) {
+        setCompileError(
+          `Could not reach the compile server at http://localhost:3001.\n\n` +
+          `The backend isn't running (or crashed). Start it with start.ps1, ` +
+          `or run "node server.js" in the backend folder, then Recompile.\n\n` +
+          `Details: ${e.message}`
+        )
         return
       }
-      const blob = await res.blob()
-      const url = URL.createObjectURL(blob)
-      setPdfUrl(prev => {
-        if (prev) URL.revokeObjectURL(prev)
-        return url
-      })
-    } catch (e) {
-      setCompileError(`Network error: ${e.message}`)
+
+      const contentType = res.headers.get('content-type') || ''
+
+      // Success: a PDF came back.
+      if (res.ok && contentType.includes('application/pdf')) {
+        const blob = await res.blob()
+        const url = URL.createObjectURL(blob)
+        setPdfUrl(prev => {
+          if (prev) URL.revokeObjectURL(prev)
+          return url
+        })
+        return
+      }
+
+      // Error path: read the body as text first, then try to parse JSON.
+      // An empty body here means the request was cut off (proxy/timeout/crash).
+      const text = await res.text()
+      if (!text.trim()) {
+        setCompileError(
+          `The compile server returned an empty response (HTTP ${res.status}).\n\n` +
+          `This usually means the backend crashed or the request was interrupted ` +
+          `mid-compile. Check the backend terminal window for errors, then Recompile.`
+        )
+        return
+      }
+      try {
+        const body = JSON.parse(text)
+        setCompileError(body.log || body.error || `Compilation failed (HTTP ${res.status})`)
+      } catch {
+        setCompileError(text)
+      }
     } finally {
       setCompiling(false)
     }
