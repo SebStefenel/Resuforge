@@ -37,7 +37,7 @@ const editorTheme = EditorView.theme({
     background: 'var(--bg)',
   },
   '.cm-scroller': {
-    fontFamily: "'Cascadia Code', 'Fira Code', 'Consolas', monospace",
+    fontFamily: 'var(--mono)',
     overflow: 'auto',
   },
   '.cm-content': {
@@ -51,7 +51,7 @@ const editorTheme = EditorView.theme({
     borderLeftColor: 'var(--accent)',
   },
   '.cm-selectionBackground, ::selection': {
-    background: 'rgba(124, 106, 247, 0.3) !important',
+    background: 'rgba(26, 26, 26, 0.14) !important',
   },
   '.cm-gutters': {
     background: 'var(--surface)',
@@ -63,11 +63,12 @@ const editorTheme = EditorView.theme({
     background: 'var(--surface2)',
   },
   '.cm-activeLine': {
-    background: 'rgba(255,255,255,0.03)',
+    background: 'rgba(0, 0, 0, 0.035)',
   },
   '.cm-placeholder-token': {
-    background: 'rgba(124, 106, 247, 0.25)',
+    background: 'rgba(26, 26, 26, 0.10)',
     color: 'var(--accent)',
+    fontWeight: '600',
     borderRadius: '3px',
     padding: '0 2px',
   },
@@ -106,6 +107,7 @@ const LatexEditor = forwardRef(function LatexEditor(
           height="100%"
           extensions={[
             editorTheme,
+            EditorView.lineWrapping,
             placeholderHighlighter(categories),
           ]}
           onCreateEditor={(view) => {

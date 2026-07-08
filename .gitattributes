@@ -1,0 +1,14 @@
+# Normalize line endings. Source files are stored with LF in the repo and
+# checked out with LF, so Git stops warning about LF -> CRLF conversion.
+* text=auto eol=lf
+
+# Windows scripts should stay CRLF.
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Treat these as binary (never touch line endings).
+*.pdf binary
+*.png binary
+*.jpg binary
+*.zip binary

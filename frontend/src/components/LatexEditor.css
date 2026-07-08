@@ -30,3 +30,31 @@
 .latex-editor-cm .cm-editor {
   height: 100%;
 }
+
+/* Ensure the editor scrolls vertically and show a clearly visible scrollbar
+   (the browser default is nearly invisible on the light theme). */
+.latex-editor-cm .cm-scroller {
+  overflow-y: auto;
+  /* Firefox */
+  scrollbar-width: thin;
+  scrollbar-color: #b8b8b2 transparent;
+}
+
+.latex-editor-cm .cm-scroller::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+.latex-editor-cm .cm-scroller::-webkit-scrollbar-track {
+  background: var(--surface);
+}
+
+.latex-editor-cm .cm-scroller::-webkit-scrollbar-thumb {
+  background: #c2c2bc;
+  border-radius: 6px;
+  border: 3px solid var(--surface);
+}
+
+.latex-editor-cm .cm-scroller::-webkit-scrollbar-thumb:hover {
+  background: #a2a29c;
+}

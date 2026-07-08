@@ -57,7 +57,7 @@
   overflow: auto;
   display: flex;
   justify-content: center;
-  background: #555;
+  background: var(--pdf-backdrop);
   padding: 16px;
 }
 
@@ -69,7 +69,8 @@
 }
 
 .pdf-scroll .react-pdf__Page {
-  box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+  box-shadow: 0 2px 12px rgba(0,0,0,0.18);
+  border: 1px solid var(--border);
 }
 
 .pdf-loading, .pdf-error {

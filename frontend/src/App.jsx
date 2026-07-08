@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useMemo } from 'react'
+import { useState, useCallback, useRef, useMemo, useEffect, useLayoutEffect } from 'react'
 import LatexEditor from './components/LatexEditor'
 import PdfViewer from './components/PdfViewer'
 import VariantPanel from './components/VariantPanel'
@@ -6,6 +6,9 @@ import CreateSlotModal from './components/CreateSlotModal'
 import './App.css'
 
 const STORAGE_KEY = 'resuforge_state'
+const LAYOUT_KEY = 'resuforge_layout'
+const MIN_PANEL = 220 // px — smallest a draggable panel may get
+const GUTTER = 6 // px — width of each divider
 
 function loadState() {
   try {
@@ -18,6 +21,20 @@ function loadState() {
 function saveState(state) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+  } catch {}
+}
+
+function loadLayout() {
+  try {
+    const raw = localStorage.getItem(LAYOUT_KEY)
+    if (raw) return JSON.parse(raw)
+  } catch {}
+  return null
+}
+
+function saveLayout(layout) {
+  try {
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout))
   } catch {}
 }
 
@@ -52,6 +69,81 @@ export default function App() {
   // { selectedText, from, to }
 
   const editorRef = useRef(null)
+
+  // ── Resizable panels ──────────────────────────────────────────────
+  const savedLayout = loadLayout()
+  const [editorW, setEditorW] = useState(savedLayout?.editorW ?? null)
+  const [previewW, setPreviewW] = useState(savedLayout?.previewW ?? null)
+  const [dragging, setDragging] = useState(null) // 'editor' | 'preview' | null
+  const panelsRef = useRef(null)
+
+  // Initialise widths on first mount (before paint) if not restored from storage.
+  useLayoutEffect(() => {
+    if (editorW != null && previewW != null) return
+    const el = panelsRef.current
+    if (!el) return
+    const total = el.clientWidth
+    const variants = 320
+    const each = Math.max(MIN_PANEL, Math.floor((total - variants - 2 * GUTTER) / 2))
+    setEditorW(each)
+    setPreviewW(each)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Persist widths whenever they change.
+  useEffect(() => {
+    if (editorW != null && previewW != null) saveLayout({ editorW, previewW })
+  }, [editorW, previewW])
+
+  // Keep panels from overflowing when the window shrinks.
+  useEffect(() => {
+    const onResize = () => {
+      const el = panelsRef.current
+      if (!el || editorW == null || previewW == null) return
+      const total = el.clientWidth
+      const maxCombined = total - 2 * GUTTER - MIN_PANEL
+      if (editorW + previewW > maxCombined && editorW + previewW > 0) {
+        const scale = maxCombined / (editorW + previewW)
+        setEditorW(Math.max(MIN_PANEL * 0.5, Math.floor(editorW * scale)))
+        setPreviewW(Math.max(MIN_PANEL * 0.5, Math.floor(previewW * scale)))
+      }
+    }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [editorW, previewW])
+
+  const startDrag = useCallback((which) => (e) => {
+    e.preventDefault()
+    const startX = e.clientX
+    const startEditor = editorW
+    const startPreview = previewW
+    const total = panelsRef.current ? panelsRef.current.clientWidth : 0
+
+    const onMove = (ev) => {
+      const dx = ev.clientX - startX
+      if (which === 'editor') {
+        // Dragging divider 1 resizes the editor; preview keeps its width.
+        const maxEditor = total - 2 * GUTTER - startPreview - MIN_PANEL
+        setEditorW(Math.max(MIN_PANEL, Math.min(startEditor + dx, maxEditor)))
+      } else {
+        // Dragging divider 2 resizes the preview; editor keeps its width.
+        const maxPreview = total - 2 * GUTTER - startEditor - MIN_PANEL
+        setPreviewW(Math.max(MIN_PANEL, Math.min(startPreview + dx, maxPreview)))
+      }
+    }
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+      setDragging(null)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    setDragging(which)
+  }, [editorW, previewW])
 
   // Persist on every meaningful change
   const persist = useCallback((t, c, s) => {
@@ -379,8 +471,11 @@ export default function App() {
         </div>
       </header>
 
-      <div className="panels">
-        <div className="panel panel-editor">
+      <div className="panels" ref={panelsRef}>
+        <div
+          className="panel panel-editor"
+          style={editorW != null ? { width: editorW } : undefined}
+        >
           <div className="panel-header">LaTeX</div>
           <LatexEditor
             ref={editorRef}
@@ -391,13 +486,28 @@ export default function App() {
           />
         </div>
 
-        <div className="panel panel-preview">
+        <div
+          className={`gutter${dragging === 'editor' ? ' gutter--dragging' : ''}`}
+          onMouseDown={startDrag('editor')}
+          title="Drag to resize"
+        />
+
+        <div
+          className="panel panel-preview"
+          style={previewW != null ? { width: previewW } : undefined}
+        >
           <div className="panel-header">Preview</div>
           {compileError
             ? <ErrorLog log={compileError} />
             : <PdfViewer url={pdfUrl} />
           }
         </div>
+
+        <div
+          className={`gutter${dragging === 'preview' ? ' gutter--dragging' : ''}`}
+          onMouseDown={startDrag('preview')}
+          title="Drag to resize"
+        />
 
         <div className="panel panel-variants">
           <div className="panel-header">Variants</div>

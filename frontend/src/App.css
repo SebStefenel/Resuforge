@@ -36,10 +36,9 @@
   font-weight: 600;
 }
 
-/* ── 3-column panels ── */
+/* ── 3-column panels (resizable) ── */
 .panels {
-  display: grid;
-  grid-template-columns: 1fr 1fr 320px;
+  display: flex;
   flex: 1;
   overflow: hidden;
   min-height: 0;
@@ -48,13 +47,44 @@
 .panel {
   display: flex;
   flex-direction: column;
-  border-right: 1px solid var(--border);
   overflow: hidden;
   min-height: 0;
+  min-width: 0;
 }
 
-.panel:last-child {
-  border-right: none;
+/* First two panels have explicit widths (set via drag); the last one fills
+   the remaining space. */
+.panel-editor,
+.panel-preview {
+  flex: 0 0 auto;
+}
+
+.panel-variants {
+  flex: 1 1 0;
+}
+
+/* Draggable divider between panels */
+.gutter {
+  flex: 0 0 6px;
+  cursor: col-resize;
+  background: var(--border);
+  position: relative;
+  transition: background 0.15s;
+}
+
+.gutter:hover,
+.gutter.gutter--dragging {
+  background: var(--accent);
+}
+
+/* Widen the actual hit area without changing layout width */
+.gutter::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  right: -3px;
 }
 
 .panel-header {
@@ -96,5 +126,5 @@
   color: var(--text-muted);
   white-space: pre-wrap;
   word-break: break-all;
-  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  font-family: var(--mono);
 }

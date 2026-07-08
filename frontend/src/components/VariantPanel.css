@@ -115,7 +115,7 @@
 
 .vp-preset--active {
   border-color: var(--accent);
-  background: rgba(124, 106, 247, 0.07);
+  background: rgba(26, 26, 26, 0.05);
 }
 
 .vp-preset-row {
