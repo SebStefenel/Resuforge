@@ -1,0 +1,4 @@
+node_modules/
+backend/temp/
+frontend/dist/
+.DS_Store

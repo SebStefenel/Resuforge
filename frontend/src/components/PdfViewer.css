@@ -1,0 +1,79 @@
+.pdf-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  gap: 12px;
+  font-size: 13px;
+}
+
+.pdf-empty-icon {
+  font-size: 40px;
+  opacity: 0.3;
+}
+
+.pdf-viewer {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.pdf-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.pdf-page-info {
+  font-size: 12px;
+  color: var(--text-muted);
+  min-width: 50px;
+  text-align: center;
+}
+
+.pdf-scale {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.pdf-scale button {
+  padding: 3px 8px;
+}
+
+.pdf-scroll {
+  flex: 1;
+  overflow: auto;
+  display: flex;
+  justify-content: center;
+  background: #555;
+  padding: 16px;
+}
+
+.pdf-scroll .react-pdf__Document {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: center;
+}
+
+.pdf-scroll .react-pdf__Page {
+  box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+}
+
+.pdf-loading, .pdf-error {
+  color: var(--text-muted);
+  padding: 40px;
+  font-size: 13px;
+}

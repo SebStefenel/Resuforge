@@ -1,0 +1,193 @@
+.vp-empty {
+  padding: 24px 16px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.vp-list {
+  overflow-y: auto;
+  flex: 1;
+  padding-bottom: 16px;
+}
+
+/* Category block */
+.vp-category {
+  border-bottom: 1px solid var(--border);
+}
+
+.vp-cat-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  cursor: pointer;
+  user-select: none;
+  background: var(--surface);
+}
+
+.vp-cat-header:hover {
+  background: var(--surface2);
+}
+
+.vp-cat-chevron {
+  font-size: 10px;
+  color: var(--text-muted);
+  width: 10px;
+}
+
+.vp-cat-name {
+  flex: 1;
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.vp-cat-slug {
+  color: var(--accent);
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 11px;
+}
+
+.vp-cat-delete {
+  padding: 2px 6px;
+  font-size: 10px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.vp-cat-header:hover .vp-cat-delete {
+  opacity: 1;
+}
+
+/* Body */
+.vp-cat-body {
+  padding: 8px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Active preset row */
+.vp-active-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.vp-active-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  min-width: 36px;
+}
+
+.vp-select {
+  flex: 1;
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  outline: none;
+}
+
+.vp-select:focus {
+  border-color: var(--accent);
+}
+
+/* Preset list */
+.vp-presets {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.vp-preset {
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.vp-preset--active {
+  border-color: var(--accent);
+  background: rgba(124, 106, 247, 0.07);
+}
+
+.vp-preset-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+}
+
+.vp-preset-info {
+  flex: 1;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.vp-preset-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.vp-preset-val {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+}
+
+.vp-preset-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.vp-preset-actions button {
+  padding: 2px 6px;
+  font-size: 11px;
+}
+
+/* Edit / Add forms */
+.vp-edit-form, .vp-add-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+}
+
+.vp-input {
+  width: 100%;
+}
+
+.vp-textarea {
+  width: 100%;
+  resize: vertical;
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 11px;
+  min-height: 54px;
+}
+
+.vp-edit-actions, .vp-add-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.vp-add-btn {
+  width: 100%;
+  margin-top: 2px;
+  font-size: 11px;
+  padding: 5px;
+}

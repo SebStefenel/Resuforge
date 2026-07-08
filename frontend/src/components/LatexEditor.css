@@ -1,0 +1,32 @@
+.latex-editor {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.latex-editor-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.toolbar-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.latex-editor-cm {
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.latex-editor-cm .cm-editor {
+  height: 100%;
+}
