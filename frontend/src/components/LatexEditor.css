@@ -25,6 +25,15 @@
   flex: 1;
   overflow: hidden;
   min-height: 0;
+  /* Bound the editor to this box regardless of the flex height chain, so the
+     CodeMirror scroller has a fixed height and actually scrolls. */
+  position: relative;
+}
+
+/* The CodeMirror wrapper (and the .cm-editor inside it) fills this box exactly. */
+.latex-editor-cm > * {
+  position: absolute;
+  inset: 0;
 }
 
 .latex-editor-cm .cm-editor {
