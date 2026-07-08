@@ -265,12 +265,30 @@ export default function App() {
     input.click()
   }, [categories, selected, persist])
 
+  const handleDownloadPdf = useCallback(() => {
+    if (!pdfUrl) return
+    const a = document.createElement('a')
+    a.href = pdfUrl
+    a.download = 'resume.pdf'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+  }, [pdfUrl])
+
   return (
     <div className="app">
       <header className="topbar">
         <span className="logo">ResuForge</span>
         <div className="topbar-actions">
           <button className="btn-ghost" onClick={handleLoadFile}>Load .tex</button>
+          <button
+            className="btn-ghost"
+            onClick={handleDownloadPdf}
+            disabled={!pdfUrl}
+            title={pdfUrl ? 'Download the compiled PDF' : 'Compile first to enable download'}
+          >
+            Download PDF
+          </button>
           <button
             className="btn-primary compile-btn"
             onClick={handleCompile}
