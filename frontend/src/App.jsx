@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useMemo } from 'react'
 import LatexEditor from './components/LatexEditor'
 import PdfViewer from './components/PdfViewer'
 import VariantPanel from './components/VariantPanel'
@@ -44,6 +44,7 @@ export default function App() {
 
   const [pdfUrl, setPdfUrl] = useState(null)
   const [compiling, setCompiling] = useState(false)
+  const [zipping, setZipping] = useState(false)
   const [compileError, setCompileError] = useState(null)
 
   // For the "create slot" modal
@@ -275,6 +276,73 @@ export default function App() {
     a.remove()
   }, [pdfUrl])
 
+  // Number of distinct resumes "Download All" will produce: the product of
+  // preset counts across categories whose placeholder is actually in the
+  // template (those are the ones that change the output).
+  const comboCount = useMemo(() => {
+    const varying = Object.keys(categories).filter(c =>
+      categories[c]?.presets &&
+      Object.keys(categories[c].presets).length > 0 &&
+      template.includes(`{{${c}}}`)
+    )
+    if (varying.length === 0) return 0
+    return varying.reduce((n, c) => n * Object.keys(categories[c].presets).length, 1)
+  }, [categories, template])
+
+  const handleDownloadAll = useCallback(async () => {
+    setZipping(true)
+    setCompileError(null)
+    try {
+      let res
+      try {
+        res = await fetch('/api/compile-all', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ template, categories })
+        })
+      } catch (e) {
+        setCompileError(
+          `Could not reach the compile server at http://localhost:3001.\n\n` +
+          `The backend isn't running (or crashed). Start it with start.ps1, ` +
+          `then try again.\n\nDetails: ${e.message}`
+        )
+        return
+      }
+
+      const contentType = res.headers.get('content-type') || ''
+      if (res.ok && contentType.includes('application/zip')) {
+        const blob = await res.blob()
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = 'resumes.zip'
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+        URL.revokeObjectURL(url)
+        return
+      }
+
+      // Error path — surface a useful message.
+      const text = await res.text()
+      if (!text.trim()) {
+        setCompileError(
+          `The compile server returned an empty response (HTTP ${res.status}).\n\n` +
+          `Check the backend terminal window for errors, then try again.`
+        )
+        return
+      }
+      try {
+        const body = JSON.parse(text)
+        setCompileError(body.log || body.error || `Download All failed (HTTP ${res.status})`)
+      } catch {
+        setCompileError(text)
+      }
+    } finally {
+      setZipping(false)
+    }
+  }, [template, categories])
+
   return (
     <div className="app">
       <header className="topbar">
@@ -290,9 +358,21 @@ export default function App() {
             Download PDF
           </button>
           <button
+            className="btn-ghost"
+            onClick={handleDownloadAll}
+            disabled={zipping || compiling || comboCount === 0}
+            title={
+              comboCount === 0
+                ? 'Add variant categories used in the template to enable this'
+                : `Compile all ${comboCount} combination${comboCount === 1 ? '' : 's'} and download as a ZIP`
+            }
+          >
+            {zipping ? 'Zipping…' : `Download All${comboCount > 0 ? ` (${comboCount})` : ''}`}
+          </button>
+          <button
             className="btn-primary compile-btn"
             onClick={handleCompile}
-            disabled={compiling}
+            disabled={compiling || zipping}
           >
             {compiling ? 'Compiling…' : 'Recompile'}
           </button>
