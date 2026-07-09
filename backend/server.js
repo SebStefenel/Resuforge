@@ -123,11 +123,19 @@ const MAX_COMBINATIONS = 300
 // Compile every combination of variant presets and stream a ZIP with a nested
 // folder layout: resumes/{cat1}:{preset}/{cat2}:{preset}/.../resume.pdf
 app.post('/api/compile-all', async (req, res) => {
-  const { template, categories } = req.body
+  const { template, categories, filename, layout } = req.body
   if (!template || typeof template !== 'string') {
     return res.status(400).json({ error: 'No template provided' })
   }
   const cats = categories && typeof categories === 'object' ? categories : {}
+
+  // Base name for each PDF inside the zip (defaults to "resume").
+  const pdfBase = safeSeg(typeof filename === 'string' ? filename : 'resume') || 'resume'
+
+  // Folder layout:
+  //   'nested' -> resumes/{cat}:{preset}/{cat}:{preset}/... (depth = #categories)
+  //   'flat'   -> resumes/{cat}:{preset}__{cat}:{preset}/    (always depth 2)
+  const layoutMode = layout === 'flat' ? 'flat' : 'nested'
 
   // Only vary categories that have at least one preset AND whose placeholder
   // actually appears in the template — those are the ones that change output.
@@ -167,14 +175,20 @@ app.post('/api/compile-all', async (req, res) => {
       latex = latex.split(`{{${cat}}}`).join(value)
     }
 
-    // Nested folder path encoding the combination.
-    const folder = combo.length
-      ? 'resumes/' + combo.map(c => `${safeSeg(c.cat)}:${safeSeg(c.presetName)}`).join('/')
-      : 'resumes'
+    // Folder path encoding the combination, per the requested layout.
+    let folder
+    if (combo.length === 0) {
+      folder = 'resumes'
+    } else {
+      const pairs = combo.map(c => `${safeSeg(c.cat)}:${safeSeg(c.presetName)}`)
+      folder = layoutMode === 'flat'
+        ? `resumes/${pairs.join('__')}`     // one folder per combination, depth 2
+        : 'resumes/' + pairs.join('/')      // nested by category
+    }
 
     const result = compileToPdf(latex)
     if (result.pdf) {
-      archive.append(result.pdf, { name: `${folder}/resume.pdf` })
+      archive.append(result.pdf, { name: `${folder}/${pdfBase}.pdf` })
     } else {
       // Don't fail the whole zip for one bad combo — include the error log.
       archive.append(

@@ -7,6 +7,7 @@ import './App.css'
 
 const STORAGE_KEY = 'resuforge_state'
 const LAYOUT_KEY = 'resuforge_layout'
+const NAME_KEY = 'resuforge_name'
 const MIN_PANEL = 220 // px — smallest a draggable panel may get
 const GUTTER = 6 // px — width of each divider
 
@@ -63,6 +64,39 @@ export default function App() {
   const [compiling, setCompiling] = useState(false)
   const [zipping, setZipping] = useState(false)
   const [compileError, setCompileError] = useState(null)
+
+  // Base name used for downloaded files (without extension).
+  const [resumeName, setResumeName] = useState(() => {
+    try { return localStorage.getItem(NAME_KEY) || 'resume' } catch { return 'resume' }
+  })
+  useEffect(() => {
+    try { localStorage.setItem(NAME_KEY, resumeName) } catch {}
+  }, [resumeName])
+
+  // Filesystem-safe base name, falling back to "resume" when empty.
+  const safeName = useMemo(
+    () => (resumeName.trim() || 'resume').replace(/[\\/:*?"<>|]+/g, '_'),
+    [resumeName]
+  )
+
+  // "Download All" dropdown (nested vs flat layout).
+  const [downloadMenuOpen, setDownloadMenuOpen] = useState(false)
+  const downloadMenuRef = useRef(null)
+  useEffect(() => {
+    if (!downloadMenuOpen) return
+    const onDown = (e) => {
+      if (downloadMenuRef.current && !downloadMenuRef.current.contains(e.target)) {
+        setDownloadMenuOpen(false)
+      }
+    }
+    const onEsc = (e) => { if (e.key === 'Escape') setDownloadMenuOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onEsc)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onEsc)
+    }
+  }, [downloadMenuOpen])
 
   // For the "create slot" modal
   const [slotModal, setSlotModal] = useState(null)
@@ -362,11 +396,11 @@ export default function App() {
     if (!pdfUrl) return
     const a = document.createElement('a')
     a.href = pdfUrl
-    a.download = 'resume.pdf'
+    a.download = `${safeName}.pdf`
     document.body.appendChild(a)
     a.click()
     a.remove()
-  }, [pdfUrl])
+  }, [pdfUrl, safeName])
 
   // Number of distinct resumes "Download All" will produce: the product of
   // preset counts across categories whose placeholder is actually in the
@@ -381,7 +415,7 @@ export default function App() {
     return varying.reduce((n, c) => n * Object.keys(categories[c].presets).length, 1)
   }, [categories, template])
 
-  const handleDownloadAll = useCallback(async () => {
+  const handleDownloadAll = useCallback(async (layout = 'nested') => {
     setZipping(true)
     setCompileError(null)
     try {
@@ -390,7 +424,7 @@ export default function App() {
         res = await fetch('/api/compile-all', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ template, categories })
+          body: JSON.stringify({ template, categories, filename: safeName, layout })
         })
       } catch (e) {
         setCompileError(
@@ -407,7 +441,7 @@ export default function App() {
         const url = URL.createObjectURL(blob)
         const a = document.createElement('a')
         a.href = url
-        a.download = 'resumes.zip'
+        a.download = `${safeName}.zip`
         document.body.appendChild(a)
         a.click()
         a.remove()
@@ -433,12 +467,25 @@ export default function App() {
     } finally {
       setZipping(false)
     }
-  }, [template, categories])
+  }, [template, categories, safeName])
 
   return (
     <div className="app">
       <header className="topbar">
-        <span className="logo">ResuForge</span>
+        <div className="topbar-left">
+          <span className="logo">ResuForge</span>
+          <label className="filename-field" title="Name used for downloaded files">
+            <input
+              className="filename-input"
+              value={resumeName}
+              onChange={(e) => setResumeName(e.target.value)}
+              placeholder="resume"
+              spellCheck={false}
+              aria-label="Resume file name"
+            />
+            <span className="filename-ext">.pdf</span>
+          </label>
+        </div>
         <div className="topbar-actions">
           <button className="btn-ghost" onClick={handleLoadFile}>Load .tex</button>
           <button
@@ -449,18 +496,39 @@ export default function App() {
           >
             Download PDF
           </button>
-          <button
-            className="btn-ghost"
-            onClick={handleDownloadAll}
-            disabled={zipping || compiling || comboCount === 0}
-            title={
-              comboCount === 0
-                ? 'Add variant categories used in the template to enable this'
-                : `Compile all ${comboCount} combination${comboCount === 1 ? '' : 's'} and download as a ZIP`
-            }
-          >
-            {zipping ? 'Zipping…' : `Download All${comboCount > 0 ? ` (${comboCount})` : ''}`}
-          </button>
+          <div className="dropdown" ref={downloadMenuRef}>
+            <button
+              className="btn-ghost dropdown-toggle"
+              onClick={() => setDownloadMenuOpen(o => !o)}
+              disabled={zipping || compiling || comboCount === 0}
+              title={
+                comboCount === 0
+                  ? 'Add variant categories used in the template to enable this'
+                  : `Compile all ${comboCount} combination${comboCount === 1 ? '' : 's'} and download as a ZIP`
+              }
+            >
+              {zipping ? 'Zipping…' : `Download All${comboCount > 0 ? ` (${comboCount})` : ''}`}
+              <span className="dropdown-caret">▾</span>
+            </button>
+            {downloadMenuOpen && (
+              <div className="dropdown-menu">
+                <button
+                  className="dropdown-item"
+                  onClick={() => { setDownloadMenuOpen(false); handleDownloadAll('nested') }}
+                >
+                  <span className="dropdown-item-title">Nested folders</span>
+                  <span className="dropdown-item-sub">resumes/location:toronto/email:school/…</span>
+                </button>
+                <button
+                  className="dropdown-item"
+                  onClick={() => { setDownloadMenuOpen(false); handleDownloadAll('flat') }}
+                >
+                  <span className="dropdown-item-title">One folder (flat)</span>
+                  <span className="dropdown-item-sub">resumes/location:toronto__email:school/…</span>
+                </button>
+              </div>
+            )}
+          </div>
           <button
             className="btn-primary compile-btn"
             onClick={handleCompile}

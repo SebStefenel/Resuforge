@@ -17,11 +17,50 @@
   flex-shrink: 0;
 }
 
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
 .logo {
   font-size: 15px;
   font-weight: 700;
   color: var(--accent);
   letter-spacing: 0.5px;
+}
+
+.filename-field {
+  display: flex;
+  align-items: center;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 8px 0 0;
+  height: 28px;
+  cursor: text;
+}
+
+.filename-field:focus-within {
+  border-color: var(--accent);
+}
+
+.filename-input {
+  border: none;
+  background: transparent;
+  padding: 4px 6px 4px 8px;
+  width: 200px;
+  font-size: 13px;
+}
+
+.filename-input:focus {
+  border: none;
+}
+
+.filename-ext {
+  font-size: 12px;
+  color: var(--text-muted);
+  user-select: none;
 }
 
 .topbar-actions {
@@ -34,6 +73,67 @@
   font-size: 13px;
   padding: 6px 18px;
   font-weight: 600;
+}
+
+/* ── Dropdown (Download All) ── */
+.dropdown {
+  position: relative;
+  display: inline-block;
+}
+
+.dropdown-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dropdown-caret {
+  font-size: 9px;
+  opacity: 0.7;
+}
+
+.dropdown-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 50;
+  min-width: 260px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dropdown-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  padding: 7px 10px;
+  text-align: left;
+  width: 100%;
+}
+
+.dropdown-item:hover {
+  background: var(--surface2);
+}
+
+.dropdown-item-title {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.dropdown-item-sub {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: var(--mono);
 }
 
 /* ── 3-column panels (resizable) ── */
