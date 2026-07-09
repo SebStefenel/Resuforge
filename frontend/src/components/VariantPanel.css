@@ -30,6 +30,26 @@
   background: var(--surface2);
 }
 
+.vp-grip {
+  cursor: grab;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1;
+  padding: 0 2px;
+  opacity: 0.5;
+  user-select: none;
+}
+.vp-grip:hover { opacity: 1; }
+.vp-grip:active { cursor: grabbing; }
+
+.vp-category--dragging {
+  opacity: 0.45;
+}
+
+.vp-category--drop {
+  box-shadow: inset 0 2px 0 0 var(--accent);
+}
+
 .vp-cat-chevron {
   font-size: 10px;
   color: var(--text-muted);

@@ -276,6 +276,15 @@ export default function App() {
     commit(newCategories, newSelected, newTemplate)
   }, [categories, selected, template, commit])
 
+  // Reorder categories (drag-and-drop in the Variants panel). Object key order
+  // is the render order, so we rebuild the object in the requested order.
+  const handleReorderCategories = useCallback((orderedNames) => {
+    const next = {}
+    for (const n of orderedNames) if (categories[n]) next[n] = categories[n]
+    for (const n of Object.keys(categories)) if (!(n in next)) next[n] = categories[n]
+    commit(next)
+  }, [categories, commit])
+
   // Single-select.
   const handleSelectPreset = useCallback((categoryName, presetName) => {
     commit(categories, { ...selected, [categoryName]: presetName })
@@ -681,6 +690,7 @@ export default function App() {
             onRemoveGroup={handleRemoveGroup}
             onAddTerm={handleAddTerm}
             onRemoveTerm={handleRemoveTerm}
+            onReorderCategories={handleReorderCategories}
           />
         </div>
       </div>

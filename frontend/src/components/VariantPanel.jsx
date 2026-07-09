@@ -1,10 +1,28 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { categoryValue, computeDerivedTags, derivedGroupNames } from '../lib/variants'
 import './VariantPanel.css'
 
 export default function VariantPanel(props) {
-  const { categories } = props
+  const { categories, onReorderCategories } = props
   const catNames = Object.keys(categories)
+  // Ref holds the authoritative dragged name (read synchronously on drop);
+  // state mirrors it only to drive the visual highlight.
+  const dragRef = useRef(null)
+  const [dragName, setDragName] = useState(null)
+  const [overName, setOverName] = useState(null)
+
+  function startDrag(cat) { dragRef.current = cat; setDragName(cat) }
+  function endDrag() { dragRef.current = null; setDragName(null); setOverName(null) }
+
+  function drop(target) {
+    const from = dragRef.current
+    endDrag()
+    if (!from || from === target) return
+    const without = catNames.filter(n => n !== from)
+    const idx = without.indexOf(target)
+    without.splice(idx < 0 ? without.length : idx, 0, from) // insert before target
+    onReorderCategories(without)
+  }
 
   if (catNames.length === 0) {
     return (
@@ -17,7 +35,19 @@ export default function VariantPanel(props) {
 
   return (
     <div className="vp-list">
-      {catNames.map(cat => <Category key={cat} name={cat} {...props} />)}
+      {catNames.map(cat => (
+        <Category
+          key={cat}
+          {...props}
+          name={cat}
+          dragging={dragName === cat}
+          dropTarget={!!dragName && dragName !== cat && overName === cat}
+          onGripDragStart={() => startDrag(cat)}
+          onGripDragEnd={endDrag}
+          onItemDragOver={() => { if (dragRef.current && overName !== cat) setOverName(cat) }}
+          onItemDrop={() => drop(cat)}
+        />
+      ))}
     </div>
   )
 }
@@ -28,6 +58,7 @@ function Category({
   onAddPreset, onDeletePreset, onDeleteCategory, onRenamePreset, onUpdatePresetValue,
   onTogglePresetTag, onSetCategoryType, onSetCategoryConfig,
   onAddGroup, onRemoveGroup, onAddTerm, onRemoveTerm,
+  dragging, dropTarget, onGripDragStart, onGripDragEnd, onItemDragOver, onItemDrop,
 }) {
   const data = categories[name]
   const [open, setOpen] = useState(true)
@@ -60,8 +91,20 @@ function Category({
   const presetHasTag = (p, group, term) => (presets[p].tags[group] ?? []).includes(term)
 
   return (
-    <div className="vp-category">
+    <div
+      className={`vp-category${dragging ? ' vp-category--dragging' : ''}${dropTarget ? ' vp-category--drop' : ''}`}
+      onDragOver={(e) => { if (onItemDragOver) { e.preventDefault(); onItemDragOver() } }}
+      onDrop={(e) => { if (onItemDrop) { e.preventDefault(); onItemDrop() } }}
+    >
       <div className="vp-cat-header" onClick={() => setOpen(o => !o)}>
+        <span
+          className="vp-grip"
+          draggable
+          onDragStart={onGripDragStart}
+          onDragEnd={onGripDragEnd}
+          onClick={(e) => e.stopPropagation()}
+          title="Drag to reorder"
+        >⠿</span>
         <span className="vp-cat-chevron">{open ? '▾' : '▸'}</span>
         <span className="vp-cat-name"><span className="vp-cat-slug">{'{{' + name + '}}'}</span></span>
         <span className="vp-cat-type">{type}</span>
