@@ -3,31 +3,57 @@
 // identically.
 //
 // Category shapes (after normalize):
-//   single:  { type:'single', presets:{ name:{latex,tags[]} }, vocabulary:[] }
-//   multi:   { type:'multi',  presets:{...}, vocabulary:[], selectCount:N, separator }
-//   derived: { type:'derived', sources:[catName], itemTemplate:'%s', joiner:', ' }
+//   single:  { type:'single', presets:{ name:{latex, tags:{group:[terms]}} }, groups:[{name,terms}] }
+//   multi:   { type:'multi',  presets:{...}, groups:[...], selectCount:N, separator }
+//   derived: { type:'derived', sources:[catName], group:'' , itemTemplate:'%s', joiner:', ' }
+//
+// Tags are organised into named groups (e.g. "Programming Languages",
+// "Technologies"). A preset's tags is { [groupName]: [term, ...] }. A derived
+// slot with group:'' unions every group; with group:'X' only that group.
 //
 // selection map:  { catName: presetName (single) | [presetNames] (multi) }
 
+const DEFAULT_GROUP = 'Tags'
+
 export function normalizePreset(p) {
-  if (typeof p === 'string') return { latex: p, tags: [] }
-  return {
-    latex: typeof p?.latex === 'string' ? p.latex : '',
-    tags: Array.isArray(p?.tags) ? p.tags : [],
+  if (typeof p === 'string') return { latex: p, tags: {} }
+  const raw = p?.tags
+  let tags = {}
+  if (Array.isArray(raw)) {
+    // migrate flat tag list -> single default group
+    if (raw.length) tags = { [DEFAULT_GROUP]: [...raw] }
+  } else if (raw && typeof raw === 'object') {
+    for (const [g, arr] of Object.entries(raw)) tags[g] = Array.isArray(arr) ? [...arr] : []
   }
+  return { latex: typeof p?.latex === 'string' ? p.latex : '', tags }
 }
 
 export function normalizeCategory(cat) {
   const type = cat?.type === 'multi' || cat?.type === 'derived' ? cat.type : 'single'
   const presets = {}
   for (const [k, v] of Object.entries(cat?.presets ?? {})) presets[k] = normalizePreset(v)
+
+  let groups
+  if (Array.isArray(cat?.groups)) {
+    groups = cat.groups.map(g => ({
+      name: String(g?.name ?? ''),
+      terms: Array.isArray(g?.terms) ? [...g.terms] : [],
+    }))
+  } else if (Array.isArray(cat?.vocabulary) && cat.vocabulary.length) {
+    // migrate flat vocabulary -> single default group
+    groups = [{ name: DEFAULT_GROUP, terms: [...cat.vocabulary] }]
+  } else {
+    groups = []
+  }
+
   return {
     type,
     presets,
-    vocabulary: Array.isArray(cat?.vocabulary) ? cat.vocabulary : [],
+    groups,
     selectCount: Number.isInteger(cat?.selectCount) ? cat.selectCount : 2,
     separator: typeof cat?.separator === 'string' ? cat.separator : '\n\n',
     sources: Array.isArray(cat?.sources) ? cat.sources : [],
+    group: typeof cat?.group === 'string' ? cat.group : '', // derived: which group to pull ('' = all)
     itemTemplate: typeof cat?.itemTemplate === 'string' ? cat.itemTemplate : '%s',
     joiner: typeof cat?.joiner === 'string' ? cat.joiner : ', ',
   }
@@ -47,20 +73,40 @@ export function pickedPresetNames(cat, sel) {
   return []
 }
 
-// De-duplicated (first-seen order) union of tags from a derived slot's sources.
+// De-duplicated union of tags from a derived slot's sources, optionally
+// filtered to a single group. Ordered by each source's vocabulary (group order,
+// then term order) so output is stable; deduped first-seen across presets.
 export function computeDerivedTags(categories, selection, derivedCat) {
+  const wantGroup = derivedCat.group || ''
   const seen = new Set()
   const out = []
   for (const src of derivedCat.sources) {
     const sc = categories[src]
     if (!sc) continue
     for (const pn of pickedPresetNames(sc, selection[src])) {
-      for (const t of sc.presets[pn]?.tags ?? []) {
-        if (!seen.has(t)) { seen.add(t); out.push(t) }
+      const presetTags = sc.presets[pn]?.tags ?? {}
+      for (const group of sc.groups) {
+        if (wantGroup && group.name !== wantGroup) continue
+        const has = new Set(presetTags[group.name] ?? [])
+        for (const term of group.terms) {
+          if (has.has(term) && !seen.has(term)) { seen.add(term); out.push(term) }
+        }
       }
     }
   }
   return out
+}
+
+// Group names available to a derived slot (union across its sources, in order).
+export function derivedGroupNames(categories, derivedCat) {
+  const names = []
+  const seen = new Set()
+  for (const src of derivedCat.sources) {
+    for (const g of categories[src]?.groups ?? []) {
+      if (!seen.has(g.name)) { seen.add(g.name); names.push(g.name) }
+    }
+  }
+  return names
 }
 
 // The LaTeX a single category resolves to under a given selection.

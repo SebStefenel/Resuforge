@@ -230,7 +230,7 @@ export default function App() {
       newCategories[categoryName] = {
         ...base,
         type: existing ? base.type : type,
-        presets: { ...base.presets, [presetName]: { latex: value, tags: [] } },
+        presets: { ...base.presets, [presetName]: { latex: value, tags: {} } },
       }
       if (newSelected[categoryName] == null) {
         newSelected[categoryName] = newCategories[categoryName].type === 'multi' ? [presetName] : presetName
@@ -244,7 +244,7 @@ export default function App() {
 
   const handleAddPreset = useCallback((categoryName, presetName, value) => {
     patchCategory(categoryName, {
-      presets: { ...categories[categoryName].presets, [presetName]: { latex: value, tags: [] } },
+      presets: { ...categories[categoryName].presets, [presetName]: { latex: value, tags: {} } },
     })
   }, [categories, patchCategory])
 
@@ -311,11 +311,15 @@ export default function App() {
     })
   }, [categories, patchCategory])
 
-  // Set the tags on a preset (from the category vocabulary).
-  const handleSetPresetTags = useCallback((categoryName, presetName, tags) => {
+  // Toggle a single tag (group + term) on a preset.
+  const handleTogglePresetTag = useCallback((categoryName, presetName, groupName, term) => {
     const cat = categories[categoryName]
+    const preset = cat.presets[presetName]
+    const cur = preset.tags[groupName] ?? []
+    const nextTerms = cur.includes(term) ? cur.filter(t => t !== term) : [...cur, term]
+    const tags = { ...preset.tags, [groupName]: nextTerms }
     patchCategory(categoryName, {
-      presets: { ...cat.presets, [presetName]: { ...cat.presets[presetName], tags } },
+      presets: { ...cat.presets, [presetName]: { ...preset, tags } },
     })
   }, [categories, patchCategory])
 
@@ -340,22 +344,51 @@ export default function App() {
     patchCategory(categoryName, patch)
   }, [patchCategory])
 
-  const handleAddVocab = useCallback((categoryName, term) => {
+  const handleAddGroup = useCallback((categoryName, groupName) => {
+    const name = groupName.trim()
+    if (!name) return
+    const cat = categories[categoryName]
+    if (cat.groups.some(g => g.name === name)) return
+    patchCategory(categoryName, { groups: [...cat.groups, { name, terms: [] }] })
+  }, [categories, patchCategory])
+
+  const handleRemoveGroup = useCallback((categoryName, groupName) => {
+    const cat = categories[categoryName]
+    const groups = cat.groups.filter(g => g.name !== groupName)
+    // Also drop this group from every preset's tags.
+    const presets = {}
+    for (const [k, p] of Object.entries(cat.presets)) {
+      const tags = { ...p.tags }; delete tags[groupName]
+      presets[k] = { ...p, tags }
+    }
+    patchCategory(categoryName, { groups, presets })
+  }, [categories, patchCategory])
+
+  const handleAddTerm = useCallback((categoryName, groupName, term) => {
     const t = term.trim()
     if (!t) return
     const cat = categories[categoryName]
-    if (cat.vocabulary.includes(t)) return
-    patchCategory(categoryName, { vocabulary: [...cat.vocabulary, t] })
+    const groups = cat.groups.map(g =>
+      g.name === groupName && !g.terms.includes(t) ? { ...g, terms: [...g.terms, t] } : g
+    )
+    patchCategory(categoryName, { groups })
   }, [categories, patchCategory])
 
-  const handleRemoveVocab = useCallback((categoryName, term) => {
+  const handleRemoveTerm = useCallback((categoryName, groupName, term) => {
     const cat = categories[categoryName]
-    // Remove the term from the vocabulary and from every preset that used it.
+    const groups = cat.groups.map(g =>
+      g.name === groupName ? { ...g, terms: g.terms.filter(t => t !== term) } : g
+    )
+    // Remove the term from every preset that had it under this group.
     const presets = {}
     for (const [k, p] of Object.entries(cat.presets)) {
-      presets[k] = { ...p, tags: p.tags.filter(t => t !== term) }
+      if (p.tags[groupName]?.includes(term)) {
+        presets[k] = { ...p, tags: { ...p.tags, [groupName]: p.tags[groupName].filter(t => t !== term) } }
+      } else {
+        presets[k] = p
+      }
     }
-    patchCategory(categoryName, { vocabulary: cat.vocabulary.filter(t => t !== term), presets })
+    patchCategory(categoryName, { groups, presets })
   }, [categories, patchCategory])
 
   const resolvedLatex = useCallback(
@@ -641,11 +674,13 @@ export default function App() {
             onDeleteCategory={handleDeleteCategory}
             onRenamePreset={handleRenamePreset}
             onUpdatePresetValue={handleUpdatePresetValue}
-            onSetPresetTags={handleSetPresetTags}
+            onTogglePresetTag={handleTogglePresetTag}
             onSetCategoryType={handleSetCategoryType}
             onSetCategoryConfig={handleSetCategoryConfig}
-            onAddVocab={handleAddVocab}
-            onRemoveVocab={handleRemoveVocab}
+            onAddGroup={handleAddGroup}
+            onRemoveGroup={handleRemoveGroup}
+            onAddTerm={handleAddTerm}
+            onRemoveTerm={handleRemoveTerm}
           />
         </div>
       </div>

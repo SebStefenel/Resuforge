@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { categoryValue, computeDerivedTags } from '../lib/variants'
+import { categoryValue, computeDerivedTags, derivedGroupNames } from '../lib/variants'
 import './VariantPanel.css'
 
 export default function VariantPanel(props) {
@@ -17,9 +17,7 @@ export default function VariantPanel(props) {
 
   return (
     <div className="vp-list">
-      {catNames.map(cat => (
-        <Category key={cat} name={cat} {...props} />
-      ))}
+      {catNames.map(cat => <Category key={cat} name={cat} {...props} />)}
     </div>
   )
 }
@@ -28,7 +26,8 @@ function Category({
   name, categories, selected,
   onSelectPreset, onToggleMultiPick,
   onAddPreset, onDeletePreset, onDeleteCategory, onRenamePreset, onUpdatePresetValue,
-  onSetPresetTags, onSetCategoryType, onSetCategoryConfig, onAddVocab, onRemoveVocab,
+  onTogglePresetTag, onSetCategoryType, onSetCategoryConfig,
+  onAddGroup, onRemoveGroup, onAddTerm, onRemoveTerm,
 }) {
   const data = categories[name]
   const [open, setOpen] = useState(true)
@@ -38,7 +37,8 @@ function Category({
   const [editingPreset, setEditingPreset] = useState(null)
   const [editVal, setEditVal] = useState('')
   const [editName, setEditName] = useState('')
-  const [newVocab, setNewVocab] = useState('')
+  const [newGroup, setNewGroup] = useState('')
+  const [termInputs, setTermInputs] = useState({}) // { groupName: text }
 
   const type = data.type
   const presets = data.presets ?? {}
@@ -51,19 +51,13 @@ function Category({
     onAddPreset(name, n, newPresetVal)
     setNewPresetName(''); setNewPresetVal(''); setAddingPreset(false)
   }
-  function startEdit(p) {
-    setEditingPreset(p); setEditName(p); setEditVal(presets[p].latex)
-  }
+  function startEdit(p) { setEditingPreset(p); setEditName(p); setEditVal(presets[p].latex) }
   function commitEdit() {
     if (editName.trim() && editName !== editingPreset) onRenamePreset(name, editingPreset, editName.trim())
     onUpdatePresetValue(name, editName.trim() || editingPreset, editVal)
     setEditingPreset(null)
   }
-  function toggleTag(p, term) {
-    const cur = presets[p].tags
-    const next = cur.includes(term) ? cur.filter(t => t !== term) : [...cur, term]
-    onSetPresetTags(name, p, next)
-  }
+  const presetHasTag = (p, group, term) => (presets[p].tags[group] ?? []).includes(term)
 
   return (
     <div className="vp-category">
@@ -80,7 +74,6 @@ function Category({
 
       {open && (
         <div className="vp-cat-body">
-          {/* Type selector */}
           <div className="vp-row">
             <span className="vp-row-label">Type</span>
             <select className="vp-select" value={type} onChange={e => onSetCategoryType(name, e.target.value)}>
@@ -91,20 +84,13 @@ function Category({
           </div>
 
           {type === 'derived' ? (
-            <DerivedConfig
-              name={name} data={data} categories={categories} selected={selected}
-              onSetCategoryConfig={onSetCategoryConfig}
-            />
+            <DerivedConfig name={name} data={data} categories={categories} selected={selected} onSetCategoryConfig={onSetCategoryConfig} />
           ) : (
             <>
               {type === 'single' ? (
                 <div className="vp-row">
                   <span className="vp-row-label">Active</span>
-                  <select
-                    className="vp-select"
-                    value={selected[name] ?? ''}
-                    onChange={e => onSelectPreset(name, e.target.value)}
-                  >
+                  <select className="vp-select" value={selected[name] ?? ''} onChange={e => onSelectPreset(name, e.target.value)}>
                     {presetNames.length === 0 && <option value="">—</option>}
                     {presetNames.map(p => <option key={p} value={p}>{p}</option>)}
                   </select>
@@ -113,14 +99,11 @@ function Category({
                 <div className="vp-row">
                   <span className="vp-row-label">Pick</span>
                   <input
-                    className="vp-count-input"
-                    type="number" min="1" max={Math.max(1, presetNames.length)}
+                    className="vp-count-input" type="number" min="1" max={Math.max(1, presetNames.length)}
                     value={data.selectCount}
                     onChange={e => onSetCategoryConfig(name, { selectCount: Math.max(1, parseInt(e.target.value) || 1) })}
                   />
-                  <span className="vp-row-hint">
-                    of {presetNames.length} — {picks.length} ticked for preview
-                  </span>
+                  <span className="vp-row-hint">of {presetNames.length} — {picks.length} ticked for preview</span>
                 </div>
               )}
 
@@ -141,18 +124,9 @@ function Category({
                       <>
                         <div className="vp-preset-row">
                           {type === 'multi' && (
-                            <input
-                              type="checkbox"
-                              className="vp-check"
-                              checked={picks.includes(p)}
-                              onChange={() => onToggleMultiPick(name, p)}
-                              title="Include in preview"
-                            />
+                            <input type="checkbox" className="vp-check" checked={picks.includes(p)} onChange={() => onToggleMultiPick(name, p)} title="Include in preview" />
                           )}
-                          <div
-                            className="vp-preset-info"
-                            onClick={() => type === 'single' ? onSelectPreset(name, p) : onToggleMultiPick(name, p)}
-                          >
+                          <div className="vp-preset-info" onClick={() => type === 'single' ? onSelectPreset(name, p) : onToggleMultiPick(name, p)}>
                             <span className="vp-preset-name">{p}</span>
                             <span className="vp-preset-val">{presets[p].latex}</span>
                           </div>
@@ -161,15 +135,23 @@ function Category({
                             <button className="btn-danger" onClick={() => onDeletePreset(name, p)}>✕</button>
                           </div>
                         </div>
-                        {data.vocabulary.length > 0 && (
-                          <div className="vp-tagrow">
-                            {data.vocabulary.map(term => (
-                              <button
-                                key={term}
-                                className={`vp-tag ${presets[p].tags.includes(term) ? 'vp-tag--on' : ''}`}
-                                onClick={() => toggleTag(p, term)}
-                                title="Toggle this tag for this preset"
-                              >{term}</button>
+                        {data.groups.length > 0 && (
+                          <div className="vp-taggroups">
+                            {data.groups.map(g => (
+                              <div key={g.name} className="vp-taggroup">
+                                <span className="vp-taggroup-name">{g.name}</span>
+                                <div className="vp-tagrow">
+                                  {g.terms.length === 0 && <span className="vp-row-hint">no terms</span>}
+                                  {g.terms.map(term => (
+                                    <button
+                                      key={term}
+                                      className={`vp-tag ${presetHasTag(p, g.name, term) ? 'vp-tag--on' : ''}`}
+                                      onClick={() => onTogglePresetTag(name, p, g.name, term)}
+                                      title={`Toggle ${term} for ${p}`}
+                                    >{term}</button>
+                                  ))}
+                                </div>
+                              </div>
                             ))}
                           </div>
                         )}
@@ -179,10 +161,9 @@ function Category({
                 ))}
               </div>
 
-              {/* Add preset */}
               {addingPreset ? (
                 <div className="vp-add-form">
-                  <input className="vp-input" value={newPresetName} onChange={e => setNewPresetName(e.target.value)} placeholder="Preset name (e.g. toronto)" autoFocus onKeyDown={e => e.key === 'Enter' && handleAdd()} />
+                  <input className="vp-input" value={newPresetName} onChange={e => setNewPresetName(e.target.value)} placeholder="Preset name (e.g. GlanceAI)" autoFocus onKeyDown={e => e.key === 'Enter' && handleAdd()} />
                   <textarea className="vp-textarea" value={newPresetVal} onChange={e => setNewPresetVal(e.target.value)} rows={3} placeholder="LaTeX value" />
                   <div className="vp-add-actions">
                     <button className="btn-primary" onClick={handleAdd}>Add</button>
@@ -193,25 +174,42 @@ function Category({
                 <button className="btn-ghost vp-add-btn" onClick={() => setAddingPreset(true)}>+ Add preset</button>
               )}
 
-              {/* Vocabulary (tags) editor */}
+              {/* Grouped tag vocabulary */}
               <div className="vp-vocab">
-                <div className="vp-vocab-title">Tags / skills vocabulary</div>
-                <div className="vp-vocab-chips">
-                  {data.vocabulary.map(term => (
-                    <span key={term} className="vp-vocab-chip">
-                      {term}
-                      <button className="vp-vocab-x" onClick={() => onRemoveVocab(name, term)} title="Remove tag">×</button>
-                    </span>
-                  ))}
-                  {data.vocabulary.length === 0 && <span className="vp-row-hint">none yet</span>}
-                </div>
-                <div className="vp-vocab-add">
+                <div className="vp-vocab-title">Tag groups (sub-sections)</div>
+                {data.groups.map(g => (
+                  <div key={g.name} className="vp-group">
+                    <div className="vp-group-head">
+                      <span className="vp-group-name">{g.name}</span>
+                      <button className="vp-vocab-x" onClick={() => onRemoveGroup(name, g.name)} title="Remove group">×</button>
+                    </div>
+                    <div className="vp-vocab-chips">
+                      {g.terms.length === 0 && <span className="vp-row-hint">no terms yet</span>}
+                      {g.terms.map(term => (
+                        <span key={term} className="vp-vocab-chip">
+                          {term}
+                          <button className="vp-vocab-x" onClick={() => onRemoveTerm(name, g.name, term)} title="Remove term">×</button>
+                        </span>
+                      ))}
+                    </div>
+                    <div className="vp-vocab-add">
+                      <input
+                        className="vp-input" value={termInputs[g.name] ?? ''}
+                        onChange={e => setTermInputs(s => ({ ...s, [g.name]: e.target.value }))}
+                        placeholder={`Add to ${g.name} (e.g. Python)`}
+                        onKeyDown={e => { if (e.key === 'Enter') { onAddTerm(name, g.name, termInputs[g.name] ?? ''); setTermInputs(s => ({ ...s, [g.name]: '' })) } }}
+                      />
+                      <button className="btn-ghost" onClick={() => { onAddTerm(name, g.name, termInputs[g.name] ?? ''); setTermInputs(s => ({ ...s, [g.name]: '' })) }}>Add</button>
+                    </div>
+                  </div>
+                ))}
+                <div className="vp-vocab-add vp-group-add">
                   <input
-                    className="vp-input" value={newVocab} onChange={e => setNewVocab(e.target.value)}
-                    placeholder="Add a tag (e.g. Python)"
-                    onKeyDown={e => { if (e.key === 'Enter') { onAddVocab(name, newVocab); setNewVocab('') } }}
+                    className="vp-input" value={newGroup} onChange={e => setNewGroup(e.target.value)}
+                    placeholder="New group (e.g. Technologies)"
+                    onKeyDown={e => { if (e.key === 'Enter') { onAddGroup(name, newGroup); setNewGroup('') } }}
                   />
-                  <button className="btn-ghost" onClick={() => { onAddVocab(name, newVocab); setNewVocab('') }}>Add</button>
+                  <button className="btn-ghost" onClick={() => { onAddGroup(name, newGroup); setNewGroup('') }}>Add group</button>
                 </div>
               </div>
             </>
@@ -228,12 +226,12 @@ function isActive(type, sel, preset) {
 }
 
 function DerivedConfig({ name, data, categories, selected, onSetCategoryConfig }) {
-  // Candidate source categories: those that carry a vocabulary/tags.
   const candidates = Object.keys(categories).filter(
     c => c !== name && (categories[c].type === 'single' || categories[c].type === 'multi')
   )
   const preview = categoryValue(categories, selected, name)
   const tags = computeDerivedTags(categories, selected, data)
+  const groupNames = derivedGroupNames(categories, data)
 
   function toggleSource(src) {
     const next = data.sources.includes(src) ? data.sources.filter(s => s !== src) : [...data.sources, src]
@@ -254,22 +252,22 @@ function DerivedConfig({ name, data, categories, selected, onSetCategoryConfig }
       </div>
 
       <div className="vp-row">
+        <span className="vp-row-label">Group</span>
+        <select className="vp-select" value={data.group} onChange={e => onSetCategoryConfig(name, { group: e.target.value })}>
+          <option value="">All groups</option>
+          {groupNames.map(g => <option key={g} value={g}>{g}</option>)}
+        </select>
+      </div>
+
+      <div className="vp-row">
         <span className="vp-row-label">Item</span>
-        <input
-          className="vp-input vp-mono" value={data.itemTemplate}
-          onChange={e => onSetCategoryConfig(name, { itemTemplate: e.target.value })}
-          placeholder="%s  or  \item %s"
-        />
+        <input className="vp-input vp-mono" value={data.itemTemplate} onChange={e => onSetCategoryConfig(name, { itemTemplate: e.target.value })} placeholder="%s  or  \item %s" />
       </div>
       <div className="vp-row">
         <span className="vp-row-label">Join</span>
-        <input
-          className="vp-input vp-mono" value={data.joiner}
-          onChange={e => onSetCategoryConfig(name, { joiner: e.target.value })}
-          placeholder=", "
-        />
+        <input className="vp-input vp-mono" value={data.joiner} onChange={e => onSetCategoryConfig(name, { joiner: e.target.value })} placeholder=", " />
       </div>
-      <div className="vp-row-hint">%s is replaced by each tag; items are glued with “Join”. Use a literal newline in Join for a list.</div>
+      <div className="vp-row-hint">%s is replaced by each tag; items are glued with “Join”.</div>
 
       <div className="vp-preview">
         <div className="vp-preview-title">Preview ({tags.length} tag{tags.length === 1 ? '' : 's'})</div>

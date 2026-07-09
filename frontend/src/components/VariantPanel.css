@@ -255,13 +255,59 @@
   border-color: var(--accent);
 }
 
+/* ── Grouped per-preset tags ── */
+.vp-taggroups {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 8px 8px;
+}
+
+.vp-taggroup {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.vp-taggroup-name {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+}
+
 /* ── Vocabulary editor ── */
 .vp-vocab {
   border-top: 1px dashed var(--border);
   padding-top: 8px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
+}
+
+.vp-group {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+}
+
+.vp-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.vp-group-name {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.vp-group-add {
+  margin-top: 2px;
 }
 
 .vp-vocab-title {
