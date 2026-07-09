@@ -3,6 +3,10 @@ import LatexEditor from './components/LatexEditor'
 import PdfViewer from './components/PdfViewer'
 import VariantPanel from './components/VariantPanel'
 import CreateSlotModal from './components/CreateSlotModal'
+import {
+  normalizeCategories, normalizeCategory, resolveTemplate, combinationCount,
+  enumerateSelections, comboFolder,
+} from './lib/variants'
 import './App.css'
 
 const STORAGE_KEY = 'resuforge_state'
@@ -55,10 +59,11 @@ export default function App() {
   const saved = loadState()
 
   const [template, setTemplate] = useState(saved?.template ?? DEFAULT_TEMPLATE)
-  const [categories, setCategories] = useState(saved?.categories ?? {})
-  // { categoryName: { presets: { presetName: value }, description: '' } }
+  // Normalized on load so old saves (preset = plain string) upgrade to the
+  // richer { latex, tags } shape and every category has a type. See lib/variants.js.
+  const [categories, setCategories] = useState(() => normalizeCategories(saved?.categories ?? {}))
   const [selected, setSelected] = useState(saved?.selected ?? {})
-  // { categoryName: presetName }
+  // { categoryName: presetName (single) | [presetNames] (multi) }
 
   const [pdfUrl, setPdfUrl] = useState(null)
   const [compiling, setCompiling] = useState(false)
@@ -194,124 +199,169 @@ export default function App() {
     setSlotModal({ selectedText, from, to })
   }, [])
 
-  const handleCreateSlot = useCallback(({ categoryName, presetName, value, from, to }) => {
-    const newCategories = { ...categories }
-    if (!newCategories[categoryName]) {
-      newCategories[categoryName] = { presets: {} }
+  // Commit a categories/selected change and persist in one place.
+  const commit = useCallback((newCategories, newSelected = selected, newTemplate = template) => {
+    setCategories(newCategories)
+    setSelected(newSelected)
+    if (newTemplate !== template) setTemplate(newTemplate)
+    persist(newTemplate, newCategories, newSelected)
+  }, [selected, template, persist])
+
+  // Shallow-patch a single category.
+  const patchCategory = useCallback((categoryName, patch, newSelected = selected) => {
+    const newCategories = {
+      ...categories,
+      [categoryName]: { ...categories[categoryName], ...patch },
     }
-    newCategories[categoryName] = {
-      ...newCategories[categoryName],
-      presets: {
-        ...newCategories[categoryName].presets,
-        [presetName]: value
+    commit(newCategories, newSelected)
+  }, [categories, selected, commit])
+
+  const handleCreateSlot = useCallback(({ categoryName, presetName, value, from, to, type = 'single' }) => {
+    const newCategories = { ...categories }
+    const newSelected = { ...selected }
+
+    if (type === 'derived') {
+      newCategories[categoryName] = normalizeCategory({ type: 'derived' })
+      // derived slots aren't "selected" — they're computed
+      delete newSelected[categoryName]
+    } else {
+      const existing = newCategories[categoryName]
+      const base = existing ?? normalizeCategory({ type })
+      newCategories[categoryName] = {
+        ...base,
+        type: existing ? base.type : type,
+        presets: { ...base.presets, [presetName]: { latex: value, tags: [] } },
+      }
+      if (newSelected[categoryName] == null) {
+        newSelected[categoryName] = newCategories[categoryName].type === 'multi' ? [presetName] : presetName
       }
     }
 
-    // Replace the selected range in the template with {{categoryName}}
-    const placeholder = `{{${categoryName}}}`
-    const newTemplate = template.slice(0, from) + placeholder + template.slice(to)
-
-    const newSelected = { ...selected }
-    if (!newSelected[categoryName]) {
-      newSelected[categoryName] = presetName
-    }
-
-    setTemplate(newTemplate)
-    setCategories(newCategories)
-    setSelected(newSelected)
-    persist(newTemplate, newCategories, newSelected)
+    const newTemplate = template.slice(0, from) + `{{${categoryName}}}` + template.slice(to)
+    commit(newCategories, newSelected, newTemplate)
     setSlotModal(null)
-  }, [categories, selected, template, persist])
+  }, [categories, selected, template, commit])
 
   const handleAddPreset = useCallback((categoryName, presetName, value) => {
-    const newCategories = {
-      ...categories,
-      [categoryName]: {
-        ...categories[categoryName],
-        presets: {
-          ...categories[categoryName].presets,
-          [presetName]: value
-        }
-      }
-    }
-    setCategories(newCategories)
-    persist(template, newCategories, selected)
-  }, [categories, template, selected, persist])
+    patchCategory(categoryName, {
+      presets: { ...categories[categoryName].presets, [presetName]: { latex: value, tags: [] } },
+    })
+  }, [categories, patchCategory])
 
   const handleDeletePreset = useCallback((categoryName, presetName) => {
-    const newPresets = { ...categories[categoryName].presets }
+    const cat = categories[categoryName]
+    const newPresets = { ...cat.presets }
     delete newPresets[presetName]
-    const newCategories = {
-      ...categories,
-      [categoryName]: { ...categories[categoryName], presets: newPresets }
-    }
     const newSelected = { ...selected }
-    if (newSelected[categoryName] === presetName) {
-      const remaining = Object.keys(newPresets)
-      newSelected[categoryName] = remaining[0] ?? null
+    if (cat.type === 'multi') {
+      newSelected[categoryName] = (selected[categoryName] || []).filter(n => n !== presetName)
+    } else if (selected[categoryName] === presetName) {
+      newSelected[categoryName] = Object.keys(newPresets)[0] ?? null
     }
-    setCategories(newCategories)
-    setSelected(newSelected)
-    persist(template, newCategories, newSelected)
-  }, [categories, template, selected, persist])
+    commit({ ...categories, [categoryName]: { ...cat, presets: newPresets } }, newSelected)
+  }, [categories, selected, commit])
 
   const handleDeleteCategory = useCallback((categoryName) => {
     const newCategories = { ...categories }
     delete newCategories[categoryName]
+    // Drop this category from any derived slot's sources.
+    for (const [name, cat] of Object.entries(newCategories)) {
+      if (cat.type === 'derived' && cat.sources.includes(categoryName)) {
+        newCategories[name] = { ...cat, sources: cat.sources.filter(s => s !== categoryName) }
+      }
+    }
     const newSelected = { ...selected }
     delete newSelected[categoryName]
-    // Remove placeholder from template too
-    const newTemplate = template.replaceAll(`{{${categoryName}}}`, '')
-    setTemplate(newTemplate)
-    setCategories(newCategories)
-    setSelected(newSelected)
-    persist(newTemplate, newCategories, newSelected)
-  }, [categories, template, selected, persist])
+    const newTemplate = template.split(`{{${categoryName}}}`).join('')
+    commit(newCategories, newSelected, newTemplate)
+  }, [categories, selected, template, commit])
 
+  // Single-select.
   const handleSelectPreset = useCallback((categoryName, presetName) => {
-    const newSelected = { ...selected, [categoryName]: presetName }
-    setSelected(newSelected)
-    persist(template, categories, newSelected)
-  }, [selected, template, categories, persist])
+    commit(categories, { ...selected, [categoryName]: presetName })
+  }, [categories, selected, commit])
+
+  // Multi-select toggle.
+  const handleToggleMultiPick = useCallback((categoryName, presetName) => {
+    const cur = Array.isArray(selected[categoryName]) ? selected[categoryName] : []
+    const next = cur.includes(presetName) ? cur.filter(n => n !== presetName) : [...cur, presetName]
+    commit(categories, { ...selected, [categoryName]: next })
+  }, [categories, selected, commit])
 
   const handleRenamePreset = useCallback((categoryName, oldName, newName) => {
     if (oldName === newName || !newName.trim()) return
-    const presets = { ...categories[categoryName].presets }
-    const val = presets[oldName]
-    delete presets[oldName]
-    presets[newName] = val
-    const newCategories = {
-      ...categories,
-      [categoryName]: { ...categories[categoryName], presets }
-    }
+    const cat = categories[categoryName]
+    if (cat.presets[newName]) return // don't clobber
+    const presets = {}
+    // preserve order
+    for (const [k, v] of Object.entries(cat.presets)) presets[k === oldName ? newName : k] = v
     const newSelected = { ...selected }
-    if (newSelected[categoryName] === oldName) newSelected[categoryName] = newName
-    setCategories(newCategories)
-    setSelected(newSelected)
-    persist(template, newCategories, newSelected)
-  }, [categories, selected, template, persist])
-
-  const handleUpdatePresetValue = useCallback((categoryName, presetName, value) => {
-    const newCategories = {
-      ...categories,
-      [categoryName]: {
-        ...categories[categoryName],
-        presets: { ...categories[categoryName].presets, [presetName]: value }
-      }
+    if (cat.type === 'multi') {
+      newSelected[categoryName] = (selected[categoryName] || []).map(n => (n === oldName ? newName : n))
+    } else if (selected[categoryName] === oldName) {
+      newSelected[categoryName] = newName
     }
-    setCategories(newCategories)
-    persist(template, newCategories, selected)
-  }, [categories, selected, template, persist])
+    commit({ ...categories, [categoryName]: { ...cat, presets } }, newSelected)
+  }, [categories, selected, commit])
 
-  const resolvedLatex = useCallback(() => {
-    let result = template
-    for (const [cat, presetName] of Object.entries(selected)) {
-      if (!presetName) continue
-      const value = categories[cat]?.presets?.[presetName] ?? ''
-      result = result.replaceAll(`{{${cat}}}`, value)
+  const handleUpdatePresetValue = useCallback((categoryName, presetName, latex) => {
+    const cat = categories[categoryName]
+    patchCategory(categoryName, {
+      presets: { ...cat.presets, [presetName]: { ...cat.presets[presetName], latex } },
+    })
+  }, [categories, patchCategory])
+
+  // Set the tags on a preset (from the category vocabulary).
+  const handleSetPresetTags = useCallback((categoryName, presetName, tags) => {
+    const cat = categories[categoryName]
+    patchCategory(categoryName, {
+      presets: { ...cat.presets, [presetName]: { ...cat.presets[presetName], tags } },
+    })
+  }, [categories, patchCategory])
+
+  // Change a category's type, fixing up its selection.
+  const handleSetCategoryType = useCallback((categoryName, type) => {
+    const cat = categories[categoryName]
+    const newSelected = { ...selected }
+    if (type === 'multi') {
+      const cur = selected[categoryName]
+      newSelected[categoryName] = Array.isArray(cur) ? cur : (cur ? [cur] : [])
+    } else if (type === 'single') {
+      const cur = selected[categoryName]
+      newSelected[categoryName] = Array.isArray(cur) ? (cur[0] ?? null) : cur ?? Object.keys(cat.presets)[0] ?? null
+    } else {
+      delete newSelected[categoryName] // derived
     }
-    return result
-  }, [template, categories, selected])
+    patchCategory(categoryName, { type }, newSelected)
+  }, [categories, selected, patchCategory])
+
+  // Patch a category's config fields (selectCount, separator, sources, itemTemplate, joiner).
+  const handleSetCategoryConfig = useCallback((categoryName, patch) => {
+    patchCategory(categoryName, patch)
+  }, [patchCategory])
+
+  const handleAddVocab = useCallback((categoryName, term) => {
+    const t = term.trim()
+    if (!t) return
+    const cat = categories[categoryName]
+    if (cat.vocabulary.includes(t)) return
+    patchCategory(categoryName, { vocabulary: [...cat.vocabulary, t] })
+  }, [categories, patchCategory])
+
+  const handleRemoveVocab = useCallback((categoryName, term) => {
+    const cat = categories[categoryName]
+    // Remove the term from the vocabulary and from every preset that used it.
+    const presets = {}
+    for (const [k, p] of Object.entries(cat.presets)) {
+      presets[k] = { ...p, tags: p.tags.filter(t => t !== term) }
+    }
+    patchCategory(categoryName, { vocabulary: cat.vocabulary.filter(t => t !== term), presets })
+  }, [categories, patchCategory])
+
+  const resolvedLatex = useCallback(
+    () => resolveTemplate(template, categories, selected),
+    [template, categories, selected]
+  )
 
   const handleCompile = useCallback(async () => {
     setCompiling(true)
@@ -402,29 +452,31 @@ export default function App() {
     a.remove()
   }, [pdfUrl, safeName])
 
-  // Number of distinct resumes "Download All" will produce: the product of
-  // preset counts across categories whose placeholder is actually in the
-  // template (those are the ones that change the output).
-  const comboCount = useMemo(() => {
-    const varying = Object.keys(categories).filter(c =>
-      categories[c]?.presets &&
-      Object.keys(categories[c].presets).length > 0 &&
-      template.includes(`{{${c}}}`)
-    )
-    if (varying.length === 0) return 0
-    return varying.reduce((n, c) => n * Object.keys(categories[c].presets).length, 1)
-  }, [categories, template])
+  // Number of distinct resumes "Download All" will produce. Single slots
+  // contribute their preset count; multi slots contribute C(n, selectCount);
+  // derived slots are computed per combination and don't multiply the total.
+  const comboCount = useMemo(
+    () => combinationCount(template, categories),
+    [categories, template]
+  )
 
   const handleDownloadAll = useCallback(async (layout = 'nested') => {
     setZipping(true)
     setCompileError(null)
     try {
+      // Resolve every combination up front (single source of truth in variants.js),
+      // then hand the backend a flat list of documents + their zip paths.
+      const jobs = enumerateSelections(template, categories).map(({ selection, parts }) => ({
+        path: `${comboFolder(parts, layout)}/${safeName}.pdf`,
+        latex: resolveTemplate(template, categories, selection),
+      }))
+
       let res
       try {
         res = await fetch('/api/compile-all', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ template, categories, filename: safeName, layout })
+          body: JSON.stringify({ jobs })
         })
       } catch (e) {
         setCompileError(
@@ -583,11 +635,17 @@ export default function App() {
             categories={categories}
             selected={selected}
             onSelectPreset={handleSelectPreset}
+            onToggleMultiPick={handleToggleMultiPick}
             onAddPreset={handleAddPreset}
             onDeletePreset={handleDeletePreset}
             onDeleteCategory={handleDeleteCategory}
             onRenamePreset={handleRenamePreset}
             onUpdatePresetValue={handleUpdatePresetValue}
+            onSetPresetTags={handleSetPresetTags}
+            onSetCategoryType={handleSetCategoryType}
+            onSetCategoryConfig={handleSetCategoryConfig}
+            onAddVocab={handleAddVocab}
+            onRemoveVocab={handleRemoveVocab}
           />
         </div>
       </div>

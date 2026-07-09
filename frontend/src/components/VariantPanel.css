@@ -191,3 +191,181 @@
   font-size: 11px;
   padding: 5px;
 }
+
+/* ── Type badge + config rows ── */
+.vp-cat-type {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 5px;
+  margin-right: 6px;
+}
+
+.vp-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.vp-row-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  min-width: 40px;
+}
+
+.vp-row-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.vp-count-input {
+  width: 56px;
+}
+
+.vp-check {
+  cursor: pointer;
+  margin-right: 2px;
+}
+
+/* ── Per-preset tag chips ── */
+.vp-tagrow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 0 8px 8px;
+}
+
+.vp-tag {
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text-muted);
+}
+
+.vp-tag--on {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+/* ── Vocabulary editor ── */
+.vp-vocab {
+  border-top: 1px dashed var(--border);
+  padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.vp-vocab-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+}
+
+.vp-vocab-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.vp-vocab-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+}
+
+.vp-vocab-x {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  padding: 0 2px;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.vp-vocab-x:hover {
+  color: var(--danger);
+}
+
+.vp-vocab-add {
+  display: flex;
+  gap: 6px;
+}
+
+/* ── Derived slot config ── */
+.vp-derived {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.vp-derived-label {
+  min-width: 0;
+}
+
+.vp-source-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.vp-source {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.vp-source span {
+  font-family: var(--mono);
+  color: var(--accent);
+  font-size: 11px;
+}
+
+.vp-mono {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.vp-preview {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.vp-preview-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  padding: 5px 8px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.vp-preview-body {
+  margin: 0;
+  padding: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 120px;
+  overflow: auto;
+}
