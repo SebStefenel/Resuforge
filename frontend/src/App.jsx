@@ -3,31 +3,18 @@ import LatexEditor from './components/LatexEditor'
 import PdfViewer from './components/PdfViewer'
 import VariantPanel from './components/VariantPanel'
 import CreateSlotModal from './components/CreateSlotModal'
+import { supabase } from './lib/supabaseClient'
+import { loadResume, saveResume } from './lib/resumeStore'
+import { authFetch, API_URL } from './lib/api'
 import {
   normalizeCategories, normalizeCategory, resolveTemplate, combinationCount,
   enumerateSelections, comboFolder,
 } from './lib/variants'
 import './App.css'
 
-const STORAGE_KEY = 'resuforge_state'
 const LAYOUT_KEY = 'resuforge_layout'
-const NAME_KEY = 'resuforge_name'
 const MIN_PANEL = 220 // px — smallest a draggable panel may get
 const GUTTER = 6 // px — width of each divider
-
-function loadState() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (raw) return JSON.parse(raw)
-  } catch {}
-  return null
-}
-
-function saveState(state) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
-  } catch {}
-}
 
 function loadLayout() {
   try {
@@ -55,14 +42,15 @@ Hello, World!
 \\end{document}
 `
 
-export default function App() {
-  const saved = loadState()
+export default function App({ user }) {
+  const [loaded, setLoaded] = useState(false)
+  const [loadError, setLoadError] = useState(null)
 
-  const [template, setTemplate] = useState(saved?.template ?? DEFAULT_TEMPLATE)
+  const [template, setTemplate] = useState(DEFAULT_TEMPLATE)
   // Normalized on load so old saves (preset = plain string) upgrade to the
   // richer { latex, tags } shape and every category has a type. See lib/variants.js.
-  const [categories, setCategories] = useState(() => normalizeCategories(saved?.categories ?? {}))
-  const [selected, setSelected] = useState(saved?.selected ?? {})
+  const [categories, setCategories] = useState({})
+  const [selected, setSelected] = useState({})
   // { categoryName: presetName (single) | [presetNames] (multi) }
 
   const [pdfUrl, setPdfUrl] = useState(null)
@@ -71,12 +59,43 @@ export default function App() {
   const [compileError, setCompileError] = useState(null)
 
   // Base name used for downloaded files (without extension).
-  const [resumeName, setResumeName] = useState(() => {
-    try { return localStorage.getItem(NAME_KEY) || 'resume' } catch { return 'resume' }
-  })
+  const [resumeName, setResumeName] = useState('resume')
+
+  // Fetch this user's saved resume from Supabase once on mount.
   useEffect(() => {
-    try { localStorage.setItem(NAME_KEY, resumeName) } catch {}
-  }, [resumeName])
+    let cancelled = false
+    loadResume(user.id)
+      .then((row) => {
+        if (cancelled) return
+        if (row) {
+          setTemplate(row.template || DEFAULT_TEMPLATE)
+          setCategories(normalizeCategories(row.categories ?? {}))
+          setSelected(row.selected ?? {})
+          setResumeName(row.resume_name || 'resume')
+        }
+        setLoaded(true)
+      })
+      .catch((err) => {
+        if (cancelled) return
+        setLoadError(err.message)
+        setLoaded(true)
+      })
+    return () => { cancelled = true }
+  }, [user.id])
+
+  // Debounced save to Supabase whenever the document changes. Skipped until
+  // the initial load completes so we don't overwrite the saved row with defaults.
+  const saveTimer = useRef(null)
+  useEffect(() => {
+    if (!loaded) return
+    clearTimeout(saveTimer.current)
+    saveTimer.current = setTimeout(() => {
+      saveResume(user.id, { resumeName, template, categories, selected }).catch((err) => {
+        console.error('Failed to save resume:', err)
+      })
+    }, 800)
+    return () => clearTimeout(saveTimer.current)
+  }, [loaded, user.id, resumeName, template, categories, selected])
 
   // Filesystem-safe base name, falling back to "resume" when empty.
   const safeName = useMemo(
@@ -127,7 +146,7 @@ export default function App() {
     setEditorW(each)
     setPreviewW(each)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [loaded])
 
   // Persist widths whenever they change.
   useEffect(() => {
@@ -184,15 +203,9 @@ export default function App() {
     setDragging(which)
   }, [editorW, previewW])
 
-  // Persist on every meaningful change
-  const persist = useCallback((t, c, s) => {
-    saveState({ template: t, categories: c, selected: s })
-  }, [])
-
   const handleTemplateChange = useCallback((val) => {
     setTemplate(val)
-    persist(val, categories, selected)
-  }, [categories, selected, persist])
+  }, [])
 
   // Called by editor when user has text selected and clicks Create Slot
   const handleRequestCreateSlot = useCallback((selectedText, from, to) => {
@@ -204,8 +217,7 @@ export default function App() {
     setCategories(newCategories)
     setSelected(newSelected)
     if (newTemplate !== template) setTemplate(newTemplate)
-    persist(newTemplate, newCategories, newSelected)
-  }, [selected, template, persist])
+  }, [selected, template])
 
   // Shallow-patch a single category.
   const patchCategory = useCallback((categoryName, patch, newSelected = selected) => {
@@ -416,16 +428,15 @@ export default function App() {
       // user at the backend instead of showing a cryptic parse error.
       let res
       try {
-        res = await fetch('/api/compile', {
+        res = await authFetch('/api/compile', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ latex })
         })
       } catch (e) {
         setCompileError(
-          `Could not reach the compile server at http://localhost:3001.\n\n` +
-          `The backend isn't running (or crashed). Start it with start.ps1, ` +
-          `or run "node server.js" in the backend folder, then Recompile.\n\n` +
+          `Could not reach the compile server${API_URL ? ` at ${API_URL}` : ' at http://localhost:3001'}.\n\n` +
+          `The backend isn't running (or crashed)${API_URL ? '' : '. Start it with start.ps1, or run "node server.js" in the backend folder'}, then Recompile.\n\n` +
           `Details: ${e.message}`
         )
         return
@@ -475,14 +486,12 @@ export default function App() {
       if (!file) return
       const reader = new FileReader()
       reader.onload = (ev) => {
-        const text = ev.target.result
-        setTemplate(text)
-        persist(text, categories, selected)
+        setTemplate(ev.target.result)
       }
       reader.readAsText(file)
     }
     input.click()
-  }, [categories, selected, persist])
+  }, [])
 
   const handleDownloadPdf = useCallback(() => {
     if (!pdfUrl) return
@@ -515,16 +524,15 @@ export default function App() {
 
       let res
       try {
-        res = await fetch('/api/compile-all', {
+        res = await authFetch('/api/compile-all', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ jobs })
         })
       } catch (e) {
         setCompileError(
-          `Could not reach the compile server at http://localhost:3001.\n\n` +
-          `The backend isn't running (or crashed). Start it with start.ps1, ` +
-          `then try again.\n\nDetails: ${e.message}`
+          `Could not reach the compile server${API_URL ? ` at ${API_URL}` : ' at http://localhost:3001'}.\n\n` +
+          `The backend isn't running (or crashed)${API_URL ? '' : '. Start it with start.ps1'}, then try again.\n\nDetails: ${e.message}`
         )
         return
       }
@@ -563,6 +571,19 @@ export default function App() {
     }
   }, [template, categories, safeName])
 
+  if (loadError) {
+    return (
+      <div className="app-loading">
+        <p>Couldn't load your resume: {loadError}</p>
+        <button className="btn-primary" onClick={() => window.location.reload()}>Retry</button>
+      </div>
+    )
+  }
+
+  if (!loaded) {
+    return <div className="app-loading">Loading your resume…</div>
+  }
+
   return (
     <div className="app">
       <header className="topbar">
@@ -581,6 +602,8 @@ export default function App() {
           </label>
         </div>
         <div className="topbar-actions">
+          <span className="user-email" title={user.email}>{user.email}</span>
+          <button className="btn-ghost" onClick={() => supabase.auth.signOut()}>Sign out</button>
           <button className="btn-ghost" onClick={handleLoadFile}>Load .tex</button>
           <button
             className="btn-ghost"

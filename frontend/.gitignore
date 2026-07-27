@@ -1,0 +1,4 @@
+.vercel
+.env*
+# ...but the placeholder template must stay committed.
+!.env.example

@@ -7,8 +7,53 @@ const path = require('path')
 const { v4: uuidv4 } = require('uuid')
 
 const app = express()
-app.use(cors())
+
+// In production, restrict to the deployed frontend origin(s) (comma-separated
+// in ALLOWED_ORIGINS, e.g. "https://resuforge.vercel.app"). Unset in dev so
+// the Vite proxy / localhost origins keep working without configuration.
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean)
+app.use(cors(allowedOrigins.length ? { origin: allowedOrigins } : {}))
 app.use(express.json({ limit: '50mb' })) // batch export can send many resolved documents
+
+// Every compile request shells out to pdflatex, so unauthenticated access
+// would let anyone run arbitrary compute on this box. Require a valid Supabase
+// session, validated against Supabase's auth server rather than decoded
+// locally, so this works regardless of the project's JWT signing setup.
+//
+// This deliberately uses plain fetch instead of @supabase/supabase-js: the
+// only thing needed here is one GET /auth/v1/user call, whereas createClient()
+// also spins up a realtime client that requires a native WebSocket global
+// (Node 22+). Dropping the SDK removes that runtime coupling entirely.
+//
+// Trailing slashes are stripped so both "https://x.supabase.co" and
+// "https://x.supabase.co/" work. Note the value must be the BASE project URL —
+// the dashboard's "/rest/v1/" REST endpoint is a different service and will
+// 404 here.
+const SUPABASE_URL = (process.env.SUPABASE_URL || '').replace(/\/+$/, '')
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY
+
+async function requireAuth(req, res, next) {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    return res.status(500).json({ error: 'Server misconfigured: SUPABASE_URL/SUPABASE_ANON_KEY not set' })
+  }
+  const authHeader = req.headers.authorization || ''
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null
+  if (!token) return res.status(401).json({ error: 'Missing bearer token' })
+
+  try {
+    const r = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${token}` },
+    })
+    if (!r.ok) return res.status(401).json({ error: 'Invalid or expired session' })
+    const user = await r.json()
+    if (!user?.id) return res.status(401).json({ error: 'Invalid or expired session' })
+    req.user = user
+    next()
+  } catch (e) {
+    // Network failure reaching Supabase is a server problem, not a bad token.
+    res.status(503).json({ error: 'Could not reach the auth server', log: String(e.message || e) })
+  }
+}
 
 const TEMP_DIR = path.join(__dirname, 'temp')
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR)
@@ -74,7 +119,7 @@ function compileToPdf(latex) {
   }
 }
 
-app.post('/api/compile', (req, res) => {
+app.post('/api/compile', requireAuth, (req, res) => {
   const { latex } = req.body
   if (!latex) return res.status(400).json({ error: 'No latex provided' })
 
@@ -103,7 +148,7 @@ const MAX_COMBINATIONS = 300
 // The frontend does all the variant resolution/enumeration/naming (see
 // lib/variants.js) and sends jobs: [{ path, latex }], where `path` is the full
 // intended location inside the zip, e.g. "resumes/location:toronto/Name.pdf".
-app.post('/api/compile-all', async (req, res) => {
+app.post('/api/compile-all', requireAuth, async (req, res) => {
   const { jobs } = req.body
   if (!Array.isArray(jobs) || jobs.length === 0) {
     return res.status(400).json({ error: 'No jobs provided' })
@@ -149,7 +194,7 @@ app.post('/api/compile-all', async (req, res) => {
   await archive.finalize()
 })
 
-const PORT = 3001
+const PORT = process.env.PORT || 3001
 const server = app.listen(PORT, () => console.log(`ResuForge backend running on http://localhost:${PORT}`))
 
 // A first-time compile can run for a few minutes while MiKTeX downloads

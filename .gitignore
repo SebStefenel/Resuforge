@@ -2,3 +2,12 @@ node_modules/
 backend/temp/
 frontend/dist/
 .DS_Store
+
+# Secrets — only .env.example files are committed
+.env
+.env.*
+!.env.example
+
+# Tooling
+.vercel/
+.fly/
