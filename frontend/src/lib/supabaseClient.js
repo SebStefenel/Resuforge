@@ -8,3 +8,8 @@ if (!url || !anonKey) {
 }
 
 export const supabase = createClient(url, anonKey)
+
+// Exported for the unload-time save in resumeStore.js, which has to bypass
+// supabase-js to set fetch's `keepalive` flag.
+export const SUPABASE_URL = url
+export const SUPABASE_ANON_KEY = anonKey

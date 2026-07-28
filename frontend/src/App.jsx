@@ -4,7 +4,7 @@ import PdfViewer from './components/PdfViewer'
 import VariantPanel from './components/VariantPanel'
 import CreateSlotModal from './components/CreateSlotModal'
 import { supabase } from './lib/supabaseClient'
-import { loadResume, saveResume } from './lib/resumeStore'
+import { loadResume, saveResume, saveResumeOnUnload } from './lib/resumeStore'
 import { authFetch, API_URL } from './lib/api'
 import {
   normalizeCategories, normalizeCategory, resolveTemplate, combinationCount,
@@ -83,19 +83,88 @@ export default function App({ user }) {
     return () => { cancelled = true }
   }, [user.id])
 
-  // Debounced save to Supabase whenever the document changes. Skipped until
-  // the initial load completes so we don't overwrite the saved row with defaults.
+  // Access token mirrored into a ref: the pagehide handler runs synchronously
+  // and can't await supabase.auth.getSession().
+  const sessionToken = useRef(null)
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      sessionToken.current = data.session?.access_token ?? null
+    })
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
+      sessionToken.current = s?.access_token ?? null
+    })
+    return () => sub.subscription.unsubscribe()
+  }, [])
+
+  // 'idle' | 'unsaved' | 'saving' | 'saved' | 'error' — surfaced in the topbar.
+  // Without this a failing save is completely invisible: you keep working and
+  // only discover the loss after reopening the tab.
+  const [saveState, setSaveState] = useState('idle')
+  const [saveError, setSaveError] = useState(null)
+
+  // Latest document in a ref, so the unload handler always writes current
+  // values rather than whatever was captured when it was registered.
+  const latestDoc = useRef(null)
+  latestDoc.current = { resumeName, template, categories, selected }
+
+  const dirty = useRef(false) // unsaved changes outstanding?
   const saveTimer = useRef(null)
+
+  const doSave = useCallback(async () => {
+    if (!dirty.current) return
+    dirty.current = false
+    setSaveState('saving')
+    try {
+      await saveResume(user.id, latestDoc.current)
+      setSaveState('saved')
+      setSaveError(null)
+    } catch (err) {
+      dirty.current = true // stay dirty so the next change retries
+      setSaveState('error')
+      setSaveError(err.message || String(err))
+    }
+  }, [user.id])
+
+  // Debounced save. Skipped until the initial load completes so we never
+  // overwrite the stored row with defaults.
   useEffect(() => {
     if (!loaded) return
+    dirty.current = true
+    setSaveState('unsaved')
     clearTimeout(saveTimer.current)
-    saveTimer.current = setTimeout(() => {
-      saveResume(user.id, { resumeName, template, categories, selected }).catch((err) => {
-        console.error('Failed to save resume:', err)
-      })
-    }, 800)
+    saveTimer.current = setTimeout(doSave, 800)
     return () => clearTimeout(saveTimer.current)
-  }, [loaded, user.id, resumeName, template, categories, selected])
+  }, [loaded, doSave, resumeName, template, categories, selected])
+
+  // Flush pending work when the page is hidden or closing. The debounce means
+  // up to 800ms of edits are otherwise still only in memory, and a closing tab
+  // silently drops the pending timer — the likely cause of "my changes vanished".
+  useEffect(() => {
+    if (!loaded) return
+
+    // Tab hidden (switched away, minimised, mobile backgrounding): the page is
+    // still alive, so a normal save works and reports status properly.
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden' && dirty.current) {
+        clearTimeout(saveTimer.current)
+        doSave()
+      }
+    }
+    // Page actually going away: normal requests get killed, so use keepalive.
+    const onPageHide = () => {
+      if (!dirty.current) return
+      clearTimeout(saveTimer.current)
+      const token = sessionToken.current
+      if (saveResumeOnUnload(user.id, latestDoc.current, token)) dirty.current = false
+    }
+
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('pagehide', onPageHide)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('pagehide', onPageHide)
+    }
+  }, [loaded, doSave, user.id])
 
   // Filesystem-safe base name, falling back to "resume" when empty.
   const safeName = useMemo(
@@ -602,6 +671,7 @@ export default function App({ user }) {
           </label>
         </div>
         <div className="topbar-actions">
+          <SaveStatus state={saveState} error={saveError} onRetry={doSave} />
           <span className="user-email" title={user.email}>{user.email}</span>
           <button className="btn-ghost" onClick={() => supabase.auth.signOut()}>Sign out</button>
           <button className="btn-ghost" onClick={handleLoadFile}>Load .tex</button>
@@ -730,6 +800,27 @@ export default function App({ user }) {
       )}
     </div>
   )
+}
+
+// Save state is otherwise invisible — a failing save looks identical to a
+// working one until you reopen the tab and find your work gone.
+function SaveStatus({ state, error, onRetry }) {
+  if (state === 'idle') return null
+
+  if (state === 'error') {
+    return (
+      <button
+        className="save-status save-status--error"
+        onClick={onRetry}
+        title={`${error || 'Unknown error'}\n\nClick to retry.`}
+      >
+        ⚠ Not saved — retry
+      </button>
+    )
+  }
+
+  const label = { unsaved: 'Unsaved changes…', saving: 'Saving…', saved: 'Saved' }[state]
+  return <span className={`save-status save-status--${state}`}>{label}</span>
 }
 
 function ErrorLog({ log }) {
