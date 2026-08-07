@@ -13,6 +13,39 @@ export async function loadResume(userId) {
   return data
 }
 
+// ── Local mirror ────────────────────────────────────────────────────────────
+// A copy of the last known-good document, written to this browser on every
+// successful save. Supabase stores exactly one row per user and overwrites it
+// in place, so a bad write leaves nothing to fall back on. This is that
+// fallback — it lives outside the database entirely and is never written when
+// the document is empty, so a blank state can't erase a good backup.
+
+const backupKey = (userId) => `resuforge_backup_${userId}`
+
+export function writeLocalBackup(userId, doc) {
+  try {
+    localStorage.setItem(
+      backupKey(userId),
+      JSON.stringify({ ...doc, savedAt: new Date().toISOString() })
+    )
+  } catch {
+    // Quota or private-mode failures are non-fatal; the mirror is best-effort.
+  }
+}
+
+export function readLocalBackup(userId) {
+  try {
+    const raw = localStorage.getItem(backupKey(userId))
+    return raw ? JSON.parse(raw) : null
+  } catch {
+    return null
+  }
+}
+
+export function clearLocalBackup(userId) {
+  try { localStorage.removeItem(backupKey(userId)) } catch {}
+}
+
 function rowFor(userId, { resumeName, template, categories, selected }) {
   return {
     user_id: userId,

@@ -4,6 +4,7 @@ const archiver = require('archiver')
 const { execSync } = require('child_process')
 const fs = require('fs')
 const path = require('path')
+const zlib = require('zlib')
 const { v4: uuidv4 } = require('uuid')
 
 const app = express()
@@ -63,9 +64,24 @@ if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR)
 // while. Subsequent compiles hit the local cache and are fast.
 const COMPILE_TIMEOUT = 180000 // 3 minutes
 
-// Compile a LaTeX string to a PDF. Returns { pdf: Buffer } on success, or
-// { error, log } if no PDF was produced. Never throws.
-function compileToPdf(latex) {
+// Read the SyncTeX map pdflatex produced, as plain text. `-synctex=1` writes
+// a gzipped .synctex.gz, but some builds leave an uncompressed .synctex
+// instead, so handle both. Returns null if there's nothing usable — SyncTeX is
+// a nice-to-have and must never fail a compile.
+function readSynctex(dir) {
+  try {
+    const plain = path.join(dir, 'resume.synctex')
+    if (fs.existsSync(plain)) return fs.readFileSync(plain, 'utf-8')
+
+    const gz = path.join(dir, 'resume.synctex.gz')
+    if (fs.existsSync(gz)) return zlib.gunzipSync(fs.readFileSync(gz)).toString('utf-8')
+  } catch {}
+  return null
+}
+
+// Compile a LaTeX string to a PDF. Returns { pdf: Buffer, synctex: string|null }
+// on success, or { error, log } if no PDF was produced. Never throws.
+function compileToPdf(latex, { synctex = false } = {}) {
   const id = uuidv4()
   const dir = path.join(TEMP_DIR, id)
   fs.mkdirSync(dir)
@@ -79,10 +95,11 @@ function compileToPdf(latex) {
   // In nonstopmode pdflatex never blocks on input (it emergency-stops instead),
   // and it returns non-zero on LaTeX errors even when it still manages to
   // produce a PDF. So we decide success by whether a PDF actually came out.
+  const syncFlag = synctex ? '-synctex=1 ' : ''
   const runPdflatex = () => {
     try {
       execSync(
-        `pdflatex -interaction=nonstopmode -output-directory="${dir}" "${texFile}"`,
+        `pdflatex ${syncFlag}-interaction=nonstopmode -output-directory="${dir}" "${texFile}"`,
         { timeout: COMPILE_TIMEOUT, stdio: 'pipe', cwd: dir }
       )
       return null
@@ -98,7 +115,10 @@ function compileToPdf(latex) {
     const err = runPdflatex()
 
     if (fs.existsSync(pdfFile)) {
-      return { pdf: fs.readFileSync(pdfFile) }
+      return {
+        pdf: fs.readFileSync(pdfFile),
+        synctex: synctex ? readSynctex(dir) : null,
+      }
     }
 
     let log = fs.existsSync(logFile)
@@ -119,13 +139,28 @@ function compileToPdf(latex) {
   }
 }
 
+// Two response shapes, chosen by the client:
+//
+//   { synctex: true } -> JSON { pdf: <base64>, synctex: <string|null> }
+//   otherwise         -> raw application/pdf bytes
+//
+// Click-to-source needs the SyncTeX map alongside the document, and it's far
+// too large for a response header, so it has to ride in a JSON body. Keeping
+// the raw-PDF default matters: a browser holding an older cached bundle would
+// otherwise treat the JSON as a failed compile the moment this deploys.
 app.post('/api/compile', requireAuth, (req, res) => {
-  const { latex } = req.body
+  const { latex, synctex: wantSynctex } = req.body
   if (!latex) return res.status(400).json({ error: 'No latex provided' })
 
   try {
-    const result = compileToPdf(latex)
+    const result = compileToPdf(latex, { synctex: !!wantSynctex })
     if (result.pdf) {
+      if (wantSynctex) {
+        return res.json({
+          pdf: result.pdf.toString('base64'),
+          synctex: result.synctex,
+        })
+      }
       res.set('Content-Type', 'application/pdf')
       return res.send(result.pdf)
     }

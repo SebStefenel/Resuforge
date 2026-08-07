@@ -4,12 +4,17 @@ import PdfViewer from './components/PdfViewer'
 import VariantPanel from './components/VariantPanel'
 import CreateSlotModal from './components/CreateSlotModal'
 import { supabase } from './lib/supabaseClient'
-import { loadResume, saveResume, saveResumeOnUnload } from './lib/resumeStore'
+import {
+  loadResume, saveResume, saveResumeOnUnload,
+  readLocalBackup, writeLocalBackup, clearLocalBackup,
+} from './lib/resumeStore'
 import { authFetch, API_URL } from './lib/api'
 import {
   normalizeCategories, normalizeCategory, resolveTemplate, combinationCount,
-  enumerateSelections, comboFolder,
+  enumerateSelections, comboFolder, resolveTemplateWithMap, mapResolvedLineToTemplate,
 } from './lib/variants'
+import { parseSynctex, lookupLine } from './lib/synctex'
+import { jumpToOffset } from './components/LatexEditor'
 import './App.css'
 
 const LAYOUT_KEY = 'resuforge_layout'
@@ -46,6 +51,13 @@ export default function App({ user }) {
   const [loaded, setLoaded] = useState(false)
   const [loadError, setLoadError] = useState(null)
 
+  // 'idle' | 'unsaved' | 'saving' | 'saved' | 'error' — surfaced in the topbar.
+  // Declared up here because the load effect below reports 'saved' once the
+  // document is in sync. Without a visible indicator a failing save looks
+  // identical to a working one until you reopen the tab and find work missing.
+  const [saveState, setSaveState] = useState('idle')
+  const [saveError, setSaveError] = useState(null)
+
   const [template, setTemplate] = useState(DEFAULT_TEMPLATE)
   // Normalized on load so old saves (preset = plain string) upgrade to the
   // richer { latex, tags } shape and every category has a type. See lib/variants.js.
@@ -54,6 +66,9 @@ export default function App({ user }) {
   // { categoryName: presetName (single) | [presetNames] (multi) }
 
   const [pdfUrl, setPdfUrl] = useState(null)
+  // { synctex, resolved } captured at compile time — powers click-to-source.
+  const [syncData, setSyncData] = useState(null)
+  const [syncNote, setSyncNote] = useState(null)
   const [compiling, setCompiling] = useState(false)
   const [zipping, setZipping] = useState(false)
   const [compileError, setCompileError] = useState(null)
@@ -61,22 +76,79 @@ export default function App({ user }) {
   // Base name used for downloaded files (without extension).
   const [resumeName, setResumeName] = useState('resume')
 
+  // Saving is DISABLED until a load definitively succeeds. Without this gate a
+  // failed load leaves state at the defaults, the debounced save fires, and the
+  // blank template is written straight over the user's real document. The JSX
+  // error screen does not prevent this — effects run regardless of what renders.
+  const canSave = useRef(false)
+  // Serialized snapshot of what's currently in the database, so we only write
+  // when the document has genuinely changed. This is the second half of the
+  // guard: it stops the save that would otherwise fire the instant `loaded`
+  // flips true, before the user has touched anything.
+  const persistedDoc = useRef(null)
+
+  const serializeDoc = (d) =>
+    JSON.stringify([d.resumeName, d.template, d.categories, d.selected])
+
+  // Does this document contain real work? Used both to decide what's worth
+  // mirroring locally and to spot a server document that looks suspiciously
+  // empty — the signature of the overwrite bug this guards against.
+  const hasContent = (d) => {
+    const tpl = (d.template ?? '').trim()
+    const editedTemplate = tpl !== '' && tpl !== DEFAULT_TEMPLATE.trim()
+    const hasSlots = Object.keys(d.categories ?? {}).length > 0
+    return editedTemplate || hasSlots
+  }
+
+  // Offer to restore the local mirror when the server copy came back empty.
+  const [restoreOffer, setRestoreOffer] = useState(null)
+
   // Fetch this user's saved resume from Supabase once on mount.
   useEffect(() => {
     let cancelled = false
     loadResume(user.id)
       .then((row) => {
         if (cancelled) return
+        const doc = row
+          ? {
+              resumeName: row.resume_name || 'resume',
+              template: row.template || DEFAULT_TEMPLATE,
+              categories: normalizeCategories(row.categories ?? {}),
+              selected: row.selected ?? {},
+            }
+          // No row yet: a genuinely new account. Nothing is written until the
+          // user actually edits something, so a spurious empty result can't
+          // clobber an existing document.
+          : { resumeName: 'resume', template: DEFAULT_TEMPLATE, categories: {}, selected: {} }
+
         if (row) {
-          setTemplate(row.template || DEFAULT_TEMPLATE)
-          setCategories(normalizeCategories(row.categories ?? {}))
-          setSelected(row.selected ?? {})
-          setResumeName(row.resume_name || 'resume')
+          setTemplate(doc.template)
+          setCategories(doc.categories)
+          setSelected(doc.selected)
+          setResumeName(doc.resumeName)
         }
+        persistedDoc.current = serializeDoc(doc)
+        canSave.current = true
+
+        // Server copy is empty but this browser remembers real work: surface it
+        // rather than letting the user discover the loss on their own. Nothing
+        // is written until they choose — saving only fires on a real change.
+        if (!hasContent(doc)) {
+          const backup = readLocalBackup(user.id)
+          if (backup && hasContent(backup)) setRestoreOffer(backup)
+        }
+
+        // What's on screen matches the database, so report that rather than
+        // showing nothing. Saves now only fire on a real change, so without
+        // this the indicator would stay blank until the first edit — leaving
+        // no visible confirmation that persistence is working at all.
+        setSaveState('saved')
         setLoaded(true)
       })
       .catch((err) => {
         if (cancelled) return
+        // Leave canSave false: better to show an error and save nothing than to
+        // overwrite good data with defaults we never managed to replace.
         setLoadError(err.message)
         setLoaded(true)
       })
@@ -96,12 +168,6 @@ export default function App({ user }) {
     return () => sub.subscription.unsubscribe()
   }, [])
 
-  // 'idle' | 'unsaved' | 'saving' | 'saved' | 'error' — surfaced in the topbar.
-  // Without this a failing save is completely invisible: you keep working and
-  // only discover the loss after reopening the tab.
-  const [saveState, setSaveState] = useState('idle')
-  const [saveError, setSaveError] = useState(null)
-
   // Latest document in a ref, so the unload handler always writes current
   // values rather than whatever was captured when it was registered.
   const latestDoc = useRef(null)
@@ -111,11 +177,16 @@ export default function App({ user }) {
   const saveTimer = useRef(null)
 
   const doSave = useCallback(async () => {
-    if (!dirty.current) return
+    if (!dirty.current || !canSave.current) return
     dirty.current = false
+    const snapshot = serializeDoc(latestDoc.current)
     setSaveState('saving')
     try {
       await saveResume(user.id, latestDoc.current)
+      persistedDoc.current = snapshot
+      // Mirror only real content, so an empty document can never overwrite a
+      // good backup.
+      if (hasContent(latestDoc.current)) writeLocalBackup(user.id, latestDoc.current)
       setSaveState('saved')
       setSaveError(null)
     } catch (err) {
@@ -128,7 +199,12 @@ export default function App({ user }) {
   // Debounced save. Skipped until the initial load completes so we never
   // overwrite the stored row with defaults.
   useEffect(() => {
-    if (!loaded) return
+    if (!loaded || !canSave.current) return
+    // Only write when the document actually differs from what's stored. This
+    // is what stops a save firing on the load transition itself, which is how
+    // default state could reach the database.
+    if (serializeDoc({ resumeName, template, categories, selected }) === persistedDoc.current) return
+
     dirty.current = true
     setSaveState('unsaved')
     clearTimeout(saveTimer.current)
@@ -152,7 +228,7 @@ export default function App({ user }) {
     }
     // Page actually going away: normal requests get killed, so use keepalive.
     const onPageHide = () => {
-      if (!dirty.current) return
+      if (!dirty.current || !canSave.current) return
       clearTimeout(saveTimer.current)
       const token = sessionToken.current
       if (saveResumeOnUnload(user.id, latestDoc.current, token)) dirty.current = false
@@ -481,16 +557,17 @@ export default function App({ user }) {
     patchCategory(categoryName, { groups, presets })
   }, [categories, patchCategory])
 
-  const resolvedLatex = useCallback(
-    () => resolveTemplate(template, categories, selected),
-    [template, categories, selected]
-  )
+  // The resolved document from the most recent compile, kept so click-to-source
+  // maps against exactly what produced the PDF on screen.
+  const resolvedRef = useRef(null)
 
   const handleCompile = useCallback(async () => {
     setCompiling(true)
     setCompileError(null)
     try {
-      const latex = resolvedLatex()
+      const resolved = resolveTemplateWithMap(template, categories, selected)
+      resolvedRef.current = resolved
+      const latex = resolved.text
 
       // fetch() only rejects when the request never got a response (backend
       // down, connection reset). Catch that separately so we can point the
@@ -500,7 +577,9 @@ export default function App({ user }) {
         res = await authFetch('/api/compile', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ latex })
+          // Opts into the JSON response carrying the SyncTeX map; without this
+          // the server returns raw PDF bytes (see server.js).
+          body: JSON.stringify({ latex, synctex: true })
         })
       } catch (e) {
         setCompileError(
@@ -511,16 +590,30 @@ export default function App({ user }) {
         return
       }
 
-      const contentType = res.headers.get('content-type') || ''
+      // Success. Accepts either response shape so a backend that predates the
+      // SyncTeX change still works — it just won't support click-to-source.
+      if (res.ok) {
+        const contentType = res.headers.get('content-type') || ''
+        let blob
+        let synctex = null
 
-      // Success: a PDF came back.
-      if (res.ok && contentType.includes('application/pdf')) {
-        const blob = await res.blob()
+        if (contentType.includes('application/json')) {
+          const body = await res.json()
+          const bytes = Uint8Array.from(atob(body.pdf), c => c.charCodeAt(0))
+          blob = new Blob([bytes], { type: 'application/pdf' })
+          synctex = parseSynctex(body.synctex)
+        } else {
+          blob = await res.blob()
+        }
+
         const url = URL.createObjectURL(blob)
         setPdfUrl(prev => {
           if (prev) URL.revokeObjectURL(prev)
           return url
         })
+        // Remember the exact document this PDF came from: click-to-source has
+        // to map against what was compiled, not what's since been edited.
+        setSyncData({ synctex, resolved: resolvedRef.current })
         return
       }
 
@@ -544,7 +637,54 @@ export default function App({ user }) {
     } finally {
       setCompiling(false)
     }
-  }, [resolvedLatex])
+  }, [template, categories, selected])
+
+  // Pull the local mirror back into the editor. Loading it into state is enough
+  // to make it real: the normal change-detected save then writes it back.
+  const handleRestoreBackup = useCallback(() => {
+    if (!restoreOffer) return
+    setTemplate(restoreOffer.template ?? DEFAULT_TEMPLATE)
+    setCategories(normalizeCategories(restoreOffer.categories ?? {}))
+    setSelected(restoreOffer.selected ?? {})
+    setResumeName(restoreOffer.resumeName || 'resume')
+    setRestoreOffer(null)
+  }, [restoreOffer])
+
+  // Click in the PDF -> SyncTeX line in the compiled document -> position in
+  // the template -> jump the editor there.
+  const handleSyncClick = useCallback((page, x, y) => {
+    setSyncNote(null)
+    const data = syncData
+    if (!data?.synctex || !data.resolved) return
+
+    const line = lookupLine(data.synctex, page, x, y)
+    if (line == null) {
+      setSyncNote('No source found for that spot')
+      return
+    }
+
+    const target = mapResolvedLineToTemplate(data.resolved, line)
+    if (!target) {
+      setSyncNote('No source found for that spot')
+      return
+    }
+
+    jumpToOffset(editorRef.current, target.offset)
+    // Injected variant text has no template position of its own, so say where
+    // we actually landed rather than leaving it looking like a mis-jump.
+    setSyncNote(
+      target.category
+        ? `From variant "${target.category}" — jumped to its slot`
+        : null
+    )
+  }, [syncData])
+
+  // Auto-dismiss the sync hint.
+  useEffect(() => {
+    if (!syncNote) return
+    const t = setTimeout(() => setSyncNote(null), 3500)
+    return () => clearTimeout(t)
+  }, [syncNote])
 
   const handleLoadFile = useCallback(() => {
     const input = document.createElement('input')
@@ -643,7 +783,12 @@ export default function App({ user }) {
   if (loadError) {
     return (
       <div className="app-loading">
-        <p>Couldn't load your resume: {loadError}</p>
+        <p><strong>Couldn't load your resume.</strong></p>
+        <p className="app-loading-detail">{loadError}</p>
+        <p className="app-loading-detail">
+          Saving is disabled so your stored work isn't overwritten. Reload to try again —
+          nothing has been changed.
+        </p>
         <button className="btn-primary" onClick={() => window.location.reload()}>Retry</button>
       </div>
     )
@@ -726,6 +871,28 @@ export default function App({ user }) {
         </div>
       </header>
 
+      {restoreOffer && (
+        <div className="restore-banner">
+          <span>
+            Your saved resume came back empty, but this browser has a backup from{' '}
+            <strong>{new Date(restoreOffer.savedAt).toLocaleString()}</strong>.
+          </span>
+          <button className="btn-primary" onClick={handleRestoreBackup}>
+            Restore it
+          </button>
+          <button className="btn-ghost" onClick={() => setRestoreOffer(null)}>
+            Dismiss
+          </button>
+          <button
+            className="restore-discard"
+            onClick={() => { clearLocalBackup(user.id); setRestoreOffer(null) }}
+            title="Delete this browser's backup copy"
+          >
+            Discard backup
+          </button>
+        </div>
+      )}
+
       <div className="panels" ref={panelsRef}>
         <div
           className="panel panel-editor"
@@ -751,10 +918,16 @@ export default function App({ user }) {
           className="panel panel-preview"
           style={previewW != null ? { width: previewW } : undefined}
         >
-          <div className="panel-header">Preview</div>
+          <div className="panel-header">
+            Preview
+            {syncNote && <span className="sync-note">{syncNote}</span>}
+          </div>
           {compileError
             ? <ErrorLog log={compileError} />
-            : <PdfViewer url={pdfUrl} />
+            : <PdfViewer
+                url={pdfUrl}
+                onSyncClick={syncData?.synctex ? handleSyncClick : undefined}
+              />
           }
         </div>
 

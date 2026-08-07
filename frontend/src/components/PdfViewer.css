@@ -78,3 +78,8 @@
   padding: 40px;
   font-size: 13px;
 }
+
+/* Signals that clicking the preview jumps to the source. */
+.pdf-page-clickable {
+  cursor: pointer;
+}

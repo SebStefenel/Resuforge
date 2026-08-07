@@ -131,11 +131,114 @@ export function categoryValue(categories, selection, name) {
 
 // Replace every {{cat}} placeholder in the template with its resolved value.
 export function resolveTemplate(template, categories, selection) {
-  let result = template
+  return resolveTemplateWithMap(template, categories, selection).text
+}
+
+// Same substitution as resolveTemplate, but also records where each piece of
+// the output came from. SyncTeX reports line numbers in the *resolved*
+// document while the editor shows the *template*, so click-to-source needs a
+// way back.
+//
+// This walks a segment list instead of a flat string, applying the same
+// per-category passes in the same order, so the concatenated output is
+// byte-identical to the old implementation — including the case where one
+// category's value contains another's placeholder.
+//
+// Returns { text, segments }, each segment:
+//   { resStart, resEnd, tplStart, tplEnd, category }
+// `category` is null for literal template text, which maps back 1:1. For
+// injected variant content it names the slot, and tplStart/tplEnd bracket the
+// {{placeholder}} — there's no finer-grained position to point at, since that
+// text doesn't exist in the template.
+export function resolveTemplateWithMap(template, categories, selection) {
+  let segs = [{ text: template, tplStart: 0, tplEnd: template.length, category: null }]
+
   for (const name of Object.keys(categories)) {
-    result = result.split(`{{${name}}}`).join(categoryValue(categories, selection, name))
+    const token = `{{${name}}}`
+    const value = categoryValue(categories, selection, name)
+    const next = []
+
+    for (const seg of segs) {
+      if (!seg.text.includes(token)) { next.push(seg); continue }
+
+      // Pieces of an injected segment stay attributed to their outer slot;
+      // only literal segments carry real template offsets.
+      const literal = seg.category === null
+      const parts = seg.text.split(token)
+      let cursor = 0
+
+      parts.forEach((part, idx) => {
+        if (idx > 0) {
+          next.push({
+            text: value,
+            tplStart: literal ? seg.tplStart + cursor : seg.tplStart,
+            tplEnd: literal ? seg.tplStart + cursor + token.length : seg.tplEnd,
+            category: literal ? name : seg.category,
+          })
+          cursor += token.length
+        }
+        if (part) {
+          next.push({
+            text: part,
+            tplStart: literal ? seg.tplStart + cursor : seg.tplStart,
+            tplEnd: literal ? seg.tplStart + cursor + part.length : seg.tplEnd,
+            category: seg.category,
+          })
+          cursor += part.length
+        }
+      })
+    }
+    segs = next
   }
-  return result
+
+  let text = ''
+  const segments = []
+  for (const seg of segs) {
+    segments.push({
+      resStart: text.length,
+      resEnd: text.length + seg.text.length,
+      tplStart: seg.tplStart,
+      tplEnd: seg.tplEnd,
+      category: seg.category,
+    })
+    text += seg.text
+  }
+
+  return { text, segments }
+}
+
+// Character offset in `text` where 1-based `line` starts.
+export function offsetOfLine(text, line) {
+  if (line <= 1) return 0
+  let offset = 0
+  for (let i = 1; i < line; i++) {
+    const nl = text.indexOf('\n', offset)
+    if (nl === -1) return offset
+    offset = nl + 1
+  }
+  return offset
+}
+
+// Map a 1-based line in the resolved document back to a position in the
+// template. Returns { offset, category } — `category` is set when the line came
+// from injected variant content, in which case `offset` points at its
+// {{placeholder}}. Returns null if it can't be resolved.
+export function mapResolvedLineToTemplate(resolved, resolvedLine) {
+  const { text, segments } = resolved
+  if (!segments || segments.length === 0) return null
+
+  const target = offsetOfLine(text, resolvedLine)
+
+  for (const seg of segments) {
+    if (target >= seg.resStart && target < seg.resEnd) {
+      if (seg.category !== null) return { offset: seg.tplStart, category: seg.category }
+      return { offset: seg.tplStart + (target - seg.resStart), category: null }
+    }
+  }
+
+  // Past the last segment (e.g. trailing newline) — fall back to its end.
+  const last = segments[segments.length - 1]
+  return { offset: last.category !== null ? last.tplStart : last.tplEnd, category: last.category }
 }
 
 // All k-combinations (order-independent) of an array.
