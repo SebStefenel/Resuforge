@@ -103,6 +103,9 @@ export default function App({ user }) {
   // Offer to restore the local mirror when the server copy came back empty.
   const [restoreOffer, setRestoreOffer] = useState(null)
 
+  // Backend rejected our token even after a forced refresh.
+  const [sessionExpired, setSessionExpired] = useState(false)
+
   // Fetch this user's saved resume from Supabase once on mount.
   useEffect(() => {
     let cancelled = false
@@ -617,6 +620,14 @@ export default function App({ user }) {
         return
       }
 
+      // Still unauthorised after authFetch already refreshed and retried, so
+      // the session is genuinely dead. This is not a LaTeX problem and must not
+      // be reported as one.
+      if (res.status === 401) {
+        setSessionExpired(true)
+        return
+      }
+
       // Error path: read the body as text first, then try to parse JSON.
       // An empty body here means the request was cut off (proxy/timeout/crash).
       const text = await res.text()
@@ -743,6 +754,11 @@ export default function App({ user }) {
           `Could not reach the compile server${API_URL ? ` at ${API_URL}` : ' at http://localhost:3001'}.\n\n` +
           `The backend isn't running (or crashed)${API_URL ? '' : '. Start it with start.ps1'}, then try again.\n\nDetails: ${e.message}`
         )
+        return
+      }
+
+      if (res.status === 401) {
+        setSessionExpired(true)
         return
       }
 
@@ -922,7 +938,9 @@ export default function App({ user }) {
             Preview
             {syncNote && <span className="sync-note">{syncNote}</span>}
           </div>
-          {compileError
+          {sessionExpired
+            ? <SessionExpired onSignOut={() => supabase.auth.signOut()} />
+            : compileError
             ? <ErrorLog log={compileError} />
             : <PdfViewer
                 url={pdfUrl}
@@ -994,6 +1012,28 @@ function SaveStatus({ state, error, onRetry }) {
 
   const label = { unsaved: 'Unsaved changes…', saving: 'Saving…', saved: 'Saved' }[state]
   return <span className={`save-status save-status--${state}`}>{label}</span>
+}
+
+// Shown when the compile backend rejects our token even after a forced
+// refresh. Deliberately separate from ErrorLog: labelling this "Compilation
+// Error" sends you hunting through LaTeX for a problem that isn't there.
+function SessionExpired({ onSignOut }) {
+  return (
+    <div className="error-log">
+      <div className="error-log-title">Session expired</div>
+      <div className="session-expired-body">
+        <p>
+          Your sign-in expired, so the compile server turned the request away.
+          Nothing is wrong with your LaTeX.
+        </p>
+        <p>
+          <strong>Your work is safe</strong> — it's saved and will still be here
+          after you sign back in.
+        </p>
+        <button className="btn-primary" onClick={onSignOut}>Sign in again</button>
+      </div>
+    </div>
+  )
 }
 
 function ErrorLog({ log }) {
