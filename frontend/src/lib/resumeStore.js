@@ -18,7 +18,7 @@ export async function listResumes(userId) {
 export async function loadResume(resumeId) {
   const { data, error } = await supabase
     .from('resumes')
-    .select('id, resume_name, template, categories, selected')
+    .select('id, resume_name, template, categories, selected, category_order')
     .eq('id', resumeId)
     .maybeSingle()
   if (error) throw error
@@ -47,6 +47,10 @@ function bodyOf({ resumeName, template, categories, selected }) {
     template,
     categories,
     selected,
+    // Explicit display order for the Variants panel. jsonb re-sorts object
+    // keys, so the order of `categories` alone can't be trusted on the way
+    // back out — see migration 0003.
+    category_order: Object.keys(categories ?? {}),
   }
 }
 

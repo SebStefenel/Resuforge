@@ -52,6 +52,29 @@ Hello, World!
 \\end{document}
 `
 
+// Restore the Variants panel's display order.
+//
+// The panel renders categories in object key order, but they come back from
+// Postgres as jsonb, which normalizes object keys (sorted by length, then
+// bytewise) rather than preserving insertion order. `category_order` is the
+// saved order; rebuilding the object in that sequence is what makes a
+// drag-and-drop rearrangement survive a reload. See migration 0003.
+//
+// Anything missing from the order list (older rows saved before this existed,
+// or a category added by another tab) keeps its existing relative position at
+// the end, so nothing is ever dropped.
+function applyCategoryOrder(categories, order) {
+  if (!Array.isArray(order) || order.length === 0) return categories
+  const out = {}
+  for (const name of order) {
+    if (Object.prototype.hasOwnProperty.call(categories, name)) out[name] = categories[name]
+  }
+  for (const name of Object.keys(categories)) {
+    if (!(name in out)) out[name] = categories[name]
+  }
+  return out
+}
+
 export default function App({ user }) {
   const [loaded, setLoaded] = useState(false)
   const [loadError, setLoadError] = useState(null)
@@ -178,7 +201,10 @@ export default function App({ user }) {
           ? {
               resumeName: row.resume_name || 'resume',
               template: row.template || DEFAULT_TEMPLATE,
-              categories: normalizeCategories(row.categories ?? {}),
+              categories: applyCategoryOrder(
+                normalizeCategories(row.categories ?? {}),
+                row.category_order
+              ),
               selected: row.selected ?? {},
             }
           // No row yet: a genuinely new account. Nothing is written until the
