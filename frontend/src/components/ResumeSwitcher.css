@@ -1,0 +1,139 @@
+.resume-switcher {
+  position: relative;
+  display: inline-block;
+}
+
+.resume-switcher-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+}
+
+.resume-switcher-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 180px;
+}
+
+.resume-switcher-count {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.resume-switcher-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 50;
+  min-width: 300px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.resume-switcher-list {
+  max-height: 320px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.resume-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 4px;
+  padding-right: 4px;
+}
+
+.resume-row:hover {
+  background: var(--surface2);
+}
+
+.resume-row--active {
+  background: var(--surface2);
+}
+
+.resume-row-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  padding: 8px 10px;
+  text-align: left;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.resume-row-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resume-row-badge {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 4px;
+  flex-shrink: 0;
+}
+
+.resume-row-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.resume-icon-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 3px 7px;
+}
+
+.resume-icon-btn:hover:not(:disabled) {
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.resume-icon-btn:disabled {
+  opacity: 0.35;
+}
+
+.resume-icon-btn--danger {
+  color: #b3261e;
+  border-color: #b3261e;
+}
+
+.resume-switcher-new {
+  background: transparent;
+  border: none;
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 4px 4px;
+  padding: 9px 10px;
+  text-align: left;
+  font-size: 13px;
+  color: var(--text);
+  margin-top: 2px;
+}
+
+.resume-switcher-new:hover {
+  background: var(--surface2);
+}

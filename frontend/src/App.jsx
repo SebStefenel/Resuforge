@@ -3,9 +3,11 @@ import LatexEditor from './components/LatexEditor'
 import PdfViewer from './components/PdfViewer'
 import VariantPanel from './components/VariantPanel'
 import CreateSlotModal from './components/CreateSlotModal'
+import ResumeSwitcher from './components/ResumeSwitcher'
 import { supabase } from './lib/supabaseClient'
 import {
-  loadResume, saveResume, saveResumeOnUnload,
+  listResumes, loadResume, createResume, deleteResume,
+  saveResume, saveResumeOnUnload,
   readLocalBackup, writeLocalBackup, clearLocalBackup,
 } from './lib/resumeStore'
 import { authFetch, API_URL } from './lib/api'
@@ -18,6 +20,9 @@ import { jumpToOffset } from './components/LatexEditor'
 import './App.css'
 
 const LAYOUT_KEY = 'resuforge_layout'
+// Which resume was open last, per user, so a reload reopens it rather than
+// dumping you on whichever happens to sort first.
+const lastResumeKey = (userId) => `resuforge_last_resume_${userId}`
 const MIN_PANEL = 220 // px — smallest a draggable panel may get
 const GUTTER = 6 // px — width of each divider
 
@@ -51,6 +56,16 @@ export default function App({ user }) {
   const [loaded, setLoaded] = useState(false)
   const [loadError, setLoadError] = useState(null)
 
+  // ── Multiple resumes ──────────────────────────────────────────────
+  // `resumes` is the switcher list (names only); `currentId` selects which
+  // document the editor below is bound to. Everything that used to key off
+  // user.id now keys off currentId.
+  const [resumes, setResumes] = useState([])
+  const [currentId, setCurrentId] = useState(null)
+  // True while creating/duplicating/deleting/switching. Blocks the switcher so
+  // an in-flight save can't land against the wrong document.
+  const [switching, setSwitching] = useState(false)
+
   // 'idle' | 'unsaved' | 'saving' | 'saved' | 'error' — surfaced in the topbar.
   // Declared up here because the load effect below reports 'saved' once the
   // document is in sync. Without a visible indicator a failing save looks
@@ -81,6 +96,10 @@ export default function App({ user }) {
   // blank template is written straight over the user's real document. The JSX
   // error screen does not prevent this — effects run regardless of what renders.
   const canSave = useRef(false)
+  // Declared alongside the other save guards because the resume-load effect
+  // below resets them together on every switch.
+  const dirty = useRef(false) // unsaved changes outstanding?
+  const saveTimer = useRef(null)
   // Serialized snapshot of what's currently in the database, so we only write
   // when the document has genuinely changed. This is the second half of the
   // guard: it stops the save that would otherwise fire the instant `loaded`
@@ -106,10 +125,53 @@ export default function App({ user }) {
   // Backend rejected our token even after a forced refresh.
   const [sessionExpired, setSessionExpired] = useState(false)
 
-  // Fetch this user's saved resume from Supabase once on mount.
+  // Bootstrap: fetch the resume list and decide which one to open. A brand-new
+  // account gets one created for it, so the editor is always bound to a real
+  // row and `currentId` is never null once loading finishes.
   useEffect(() => {
     let cancelled = false
-    loadResume(user.id)
+    ;(async () => {
+      try {
+        let list = await listResumes(user.id)
+        if (list.length === 0) {
+          const created = await createResume(user.id, {
+            resumeName: 'resume',
+            template: DEFAULT_TEMPLATE,
+            categories: {},
+            selected: {},
+          })
+          list = [created]
+        }
+        if (cancelled) return
+        let pick = null
+        try { pick = localStorage.getItem(lastResumeKey(user.id)) } catch {}
+        if (!list.some((r) => r.id === pick)) pick = list[0].id
+        setResumes(list)
+        setCurrentId(pick)
+      } catch (err) {
+        if (cancelled) return
+        // Leave canSave false so nothing is written against an unknown document.
+        setLoadError(err.message)
+        setLoaded(true)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [user.id])
+
+  // Load whichever resume is selected. Re-runs on every switch, resetting the
+  // save guards first so a pending write from the previous document can never
+  // land on the new one.
+  useEffect(() => {
+    if (!currentId) return
+    let cancelled = false
+    canSave.current = false
+    persistedDoc.current = null
+    dirty.current = false
+    setLoaded(false)
+    setRestoreOffer(null)
+    try { localStorage.setItem(lastResumeKey(user.id), currentId) } catch {}
+
+    loadResume(currentId)
       .then((row) => {
         if (cancelled) return
         const doc = row
@@ -124,12 +186,12 @@ export default function App({ user }) {
           // clobber an existing document.
           : { resumeName: 'resume', template: DEFAULT_TEMPLATE, categories: {}, selected: {} }
 
-        if (row) {
-          setTemplate(doc.template)
-          setCategories(doc.categories)
-          setSelected(doc.selected)
-          setResumeName(doc.resumeName)
-        }
+        // Always apply, even for a missing row: switching resumes must replace
+        // what's on screen rather than leaving the previous document visible.
+        setTemplate(doc.template)
+        setCategories(doc.categories)
+        setSelected(doc.selected)
+        setResumeName(doc.resumeName)
         persistedDoc.current = serializeDoc(doc)
         canSave.current = true
 
@@ -137,7 +199,7 @@ export default function App({ user }) {
         // rather than letting the user discover the loss on their own. Nothing
         // is written until they choose — saving only fires on a real change.
         if (!hasContent(doc)) {
-          const backup = readLocalBackup(user.id)
+          const backup = readLocalBackup(currentId)
           if (backup && hasContent(backup)) setRestoreOffer(backup)
         }
 
@@ -156,7 +218,7 @@ export default function App({ user }) {
         setLoaded(true)
       })
     return () => { cancelled = true }
-  }, [user.id])
+  }, [currentId, user.id])
 
   // Access token mirrored into a ref: the pagehide handler runs synchronously
   // and can't await supabase.auth.getSession().
@@ -176,20 +238,30 @@ export default function App({ user }) {
   const latestDoc = useRef(null)
   latestDoc.current = { resumeName, template, categories, selected }
 
-  const dirty = useRef(false) // unsaved changes outstanding?
-  const saveTimer = useRef(null)
+  // Same idea for the open resume: the unload handler runs synchronously and
+  // doSave needs to know whether we're still on the document it saved.
+  const currentIdRef = useRef(null)
+  currentIdRef.current = currentId
 
   const doSave = useCallback(async () => {
-    if (!dirty.current || !canSave.current) return
+    if (!dirty.current || !canSave.current || !currentId) return
     dirty.current = false
     const snapshot = serializeDoc(latestDoc.current)
+    // Pin the target: an await'd save must land on the document it started
+    // for, even if the user switches resumes mid-flight.
+    const targetId = currentId
     setSaveState('saving')
     try {
-      await saveResume(user.id, latestDoc.current)
-      persistedDoc.current = snapshot
+      await saveResume(targetId, user.id, latestDoc.current)
+      // Only claim "in sync" if we're still on the same document.
+      if (currentIdRef.current === targetId) persistedDoc.current = snapshot
       // Mirror only real content, so an empty document can never overwrite a
       // good backup.
-      if (hasContent(latestDoc.current)) writeLocalBackup(user.id, latestDoc.current)
+      if (hasContent(latestDoc.current)) writeLocalBackup(targetId, latestDoc.current)
+      // Keep the switcher's name column in step with the filename field.
+      setResumes((rs) => rs.map((r) =>
+        r.id === targetId ? { ...r, resume_name: latestDoc.current.resumeName } : r
+      ))
       setSaveState('saved')
       setSaveError(null)
     } catch (err) {
@@ -197,7 +269,7 @@ export default function App({ user }) {
       setSaveState('error')
       setSaveError(err.message || String(err))
     }
-  }, [user.id])
+  }, [user.id, currentId])
 
   // Debounced save. Skipped until the initial load completes so we never
   // overwrite the stored row with defaults.
@@ -234,7 +306,9 @@ export default function App({ user }) {
       if (!dirty.current || !canSave.current) return
       clearTimeout(saveTimer.current)
       const token = sessionToken.current
-      if (saveResumeOnUnload(user.id, latestDoc.current, token)) dirty.current = false
+      if (saveResumeOnUnload(currentIdRef.current, user.id, latestDoc.current, token)) {
+        dirty.current = false
+      }
     }
 
     document.addEventListener('visibilitychange', onVisibility)
@@ -697,6 +771,138 @@ export default function App({ user }) {
     return () => clearTimeout(t)
   }, [syncNote])
 
+  // ── Resume management ─────────────────────────────────────────────
+  // Every one of these flushes pending edits first: the debounce means up to
+  // 800ms of work is memory-only, and switching or deleting would otherwise
+  // drop it.
+  const flushPending = useCallback(async () => {
+    clearTimeout(saveTimer.current)
+    if (dirty.current && canSave.current) await doSave()
+  }, [doSave])
+
+  const handleSwitchResume = useCallback(async (id) => {
+    if (id === currentId || switching) return
+    setSwitching(true)
+    try {
+      await flushPending()
+      setCurrentId(id) // the load effect does the rest
+    } finally {
+      setSwitching(false)
+    }
+  }, [currentId, switching, flushPending])
+
+  const handleCreateResume = useCallback(async () => {
+    setSwitching(true)
+    try {
+      await flushPending()
+      const created = await createResume(user.id, {
+        resumeName: 'Untitled resume',
+        template: DEFAULT_TEMPLATE,
+        categories: {},
+        selected: {},
+      })
+      setResumes((rs) => [created, ...rs])
+      setCurrentId(created.id)
+    } catch (err) {
+      setSaveState('error')
+      setSaveError(`Couldn't create resume: ${err.message || err}`)
+    } finally {
+      setSwitching(false)
+    }
+  }, [user.id, flushPending])
+
+  // Duplicating the OPEN resume uses what's on screen (post-flush, that's also
+  // what's stored). Duplicating any other one reads it from the database.
+  const handleDuplicateResume = useCallback(async (id) => {
+    setSwitching(true)
+    try {
+      await flushPending()
+      const source = id === currentId
+        ? latestDoc.current
+        : await loadResume(id).then((row) => row && {
+            resumeName: row.resume_name || 'resume',
+            template: row.template || DEFAULT_TEMPLATE,
+            categories: normalizeCategories(row.categories ?? {}),
+            selected: row.selected ?? {},
+          })
+      if (!source) throw new Error('That resume no longer exists')
+
+      const created = await createResume(user.id, {
+        ...source,
+        resumeName: `${source.resumeName || 'resume'} copy`,
+      })
+      setResumes((rs) => [created, ...rs])
+      setCurrentId(created.id)
+    } catch (err) {
+      setSaveState('error')
+      setSaveError(`Couldn't duplicate resume: ${err.message || err}`)
+    } finally {
+      setSwitching(false)
+    }
+  }, [user.id, currentId, flushPending])
+
+  const handleDeleteResume = useCallback(async (id) => {
+    if (resumes.length <= 1) return // never leave the account with none
+    setSwitching(true)
+    try {
+      // Deleting the open document: drop pending edits rather than letting the
+      // debounce resurrect the row we're about to remove.
+      if (id === currentId) {
+        clearTimeout(saveTimer.current)
+        dirty.current = false
+        canSave.current = false
+      } else {
+        await flushPending()
+      }
+
+      await deleteResume(id)
+      clearLocalBackup(id)
+      const remaining = resumes.filter((r) => r.id !== id)
+      setResumes(remaining)
+      if (id === currentId) setCurrentId(remaining[0].id)
+    } catch (err) {
+      canSave.current = true // deletion failed; let saving resume
+      setSaveState('error')
+      setSaveError(`Couldn't delete resume: ${err.message || err}`)
+    } finally {
+      setSwitching(false)
+    }
+  }, [resumes, currentId, flushPending])
+
+  // ── Copy resolved LaTeX ───────────────────────────────────────────
+  // The exact document that would be compiled right now: every {{slot}}
+  // replaced using the currently selected presets.
+  const [copied, setCopied] = useState(null) // 'ok' | 'fail'
+  useEffect(() => {
+    if (!copied) return
+    const t = setTimeout(() => setCopied(null), 2000)
+    return () => clearTimeout(t)
+  }, [copied])
+
+  const handleCopyLatex = useCallback(async () => {
+    const latex = resolveTemplate(template, categories, selected)
+    try {
+      await navigator.clipboard.writeText(latex)
+      setCopied('ok')
+    } catch {
+      // Clipboard API needs a secure context and can be blocked by permissions;
+      // fall back to a hidden textarea + execCommand.
+      try {
+        const ta = document.createElement('textarea')
+        ta.value = latex
+        ta.style.position = 'fixed'
+        ta.style.opacity = '0'
+        document.body.appendChild(ta)
+        ta.select()
+        const ok = document.execCommand('copy')
+        ta.remove()
+        setCopied(ok ? 'ok' : 'fail')
+      } catch {
+        setCopied('fail')
+      }
+    }
+  }, [template, categories, selected])
+
   const handleLoadFile = useCallback(() => {
     const input = document.createElement('input')
     input.type = 'file'
@@ -819,7 +1025,16 @@ export default function App({ user }) {
       <header className="topbar">
         <div className="topbar-left">
           <span className="logo">ResuForge</span>
-          <label className="filename-field" title="Name used for downloaded files">
+          <ResumeSwitcher
+            resumes={resumes}
+            currentId={currentId}
+            busy={switching}
+            onSwitch={handleSwitchResume}
+            onCreate={handleCreateResume}
+            onDuplicate={handleDuplicateResume}
+            onDelete={handleDeleteResume}
+          />
+          <label className="filename-field" title="Resume name — also used for downloaded files">
             <input
               className="filename-input"
               value={resumeName}
@@ -836,6 +1051,13 @@ export default function App({ user }) {
           <span className="user-email" title={user.email}>{user.email}</span>
           <button className="btn-ghost" onClick={() => supabase.auth.signOut()}>Sign out</button>
           <button className="btn-ghost" onClick={handleLoadFile}>Load .tex</button>
+          <button
+            className="btn-ghost"
+            onClick={handleCopyLatex}
+            title="Copy the full LaTeX source, with the selected presets filled in"
+          >
+            {copied === 'ok' ? 'Copied!' : copied === 'fail' ? 'Copy failed' : 'Copy LaTeX'}
+          </button>
           <button
             className="btn-ghost"
             onClick={handleDownloadPdf}
@@ -901,7 +1123,7 @@ export default function App({ user }) {
           </button>
           <button
             className="restore-discard"
-            onClick={() => { clearLocalBackup(user.id); setRestoreOffer(null) }}
+            onClick={() => { clearLocalBackup(currentId); setRestoreOffer(null) }}
             title="Delete this browser's backup copy"
           >
             Discard backup
