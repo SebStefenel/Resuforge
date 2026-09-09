@@ -1,0 +1,31 @@
+.view-nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.view-nav-link {
+  display: block;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.view-nav-link:hover {
+  background: var(--surface2);
+  color: var(--text);
+}
+
+.view-nav-link--active {
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.view-nav-link--active:hover {
+  background: var(--accent-hover);
+  color: #fff;
+}

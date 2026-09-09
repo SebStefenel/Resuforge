@@ -4,7 +4,7 @@
 
 | | URL |
 | --- | --- |
-| Frontend | https://frontend-ten-green-31.vercel.app |
+| Frontend | https://resuforge-app.vercel.app (also aliased as `frontend-ten-green-31.vercel.app`) |
 | Backend | https://resuforge-backend.fly.dev |
 | Supabase | project `qaqfgxuiysfdoikutnqb` |
 

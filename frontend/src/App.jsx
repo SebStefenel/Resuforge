@@ -75,7 +75,7 @@ function applyCategoryOrder(categories, order) {
   return out
 }
 
-export default function App({ user }) {
+export default function App({ user, nav }) {
   const [loaded, setLoaded] = useState(false)
   const [loadError, setLoadError] = useState(null)
 
@@ -344,6 +344,17 @@ export default function App({ user }) {
       window.removeEventListener('pagehide', onPageHide)
     }
   }, [loaded, doSave, user.id])
+
+  // Switching to the WaterlooWorks section unmounts the editor (see Shell.jsx),
+  // which drops a debounced save that hasn't fired yet. Neither handler above
+  // catches that: the tab stays visible and the page never unloads. A ref holds
+  // the current doSave so this effect can run once and still call the live one.
+  const doSaveRef = useRef(doSave)
+  doSaveRef.current = doSave
+  useEffect(() => () => {
+    clearTimeout(saveTimer.current)
+    if (dirty.current && canSave.current) doSaveRef.current()
+  }, [])
 
   // Filesystem-safe base name, falling back to "resume" when empty.
   const safeName = useMemo(
@@ -1051,6 +1062,7 @@ export default function App({ user }) {
       <header className="topbar">
         <div className="topbar-left">
           <span className="logo">ResuForge</span>
+          {nav}
           <ResumeSwitcher
             resumes={resumes}
             currentId={currentId}

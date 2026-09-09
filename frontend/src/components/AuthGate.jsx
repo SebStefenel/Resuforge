@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabaseClient'
-import App from '../App'
+import Shell from './Shell'
 import './AuthGate.css'
 
 export default function AuthGate() {
@@ -92,5 +92,5 @@ export default function AuthGate() {
     )
   }
 
-  return <App key={session.user.id} user={session.user} />
+  return <Shell key={session.user.id} user={session.user} />
 }
