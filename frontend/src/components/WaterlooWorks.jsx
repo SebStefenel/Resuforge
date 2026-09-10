@@ -9,7 +9,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { supabase } from '../lib/supabaseClient'
 import { loadDataset, saveDataset, clearDataset } from '../lib/wwStore'
 import { hasAnyKey } from '../lib/ai'
-import { normalizeAll, pendingCount } from '../lib/compensation'
+import { normalizeAll, pendingCount, formatRange } from '../lib/compensation'
 import {
   mergeDocuments, buildReport, toCsv, toCleanJson, tally,
   filterPostings, sortPostings, EMPTY_FILTERS,
@@ -289,6 +289,7 @@ export default function WaterlooWorks({ user, nav, ai, aiLoaded, onOpenAi }) {
               {comp ? (
                 <button className="btn-ghost" onClick={stopCompensation}>Stop AI</button>
               ) : (
+                <>
                 <button
                   className="btn-ghost"
                   onClick={() => (hasAnyKey(ai) ? runCompensation() : onOpenAi())}
@@ -300,6 +301,19 @@ export default function WaterlooWorks({ user, nav, ai, aiLoaded, onOpenAi }) {
                 >
                   {pending > 0 ? `Normalize pay (${pending})` : 'Normalize pay'}
                 </button>
+                {postings.length > pending && (
+                  <button
+                    className="btn-ghost"
+                    onClick={() => {
+                      if (confirm(`Recalculate pay for all ${postings.length} postings? This re-runs the AI over every one, including those already done.`))
+                        runCompensation({ force: true })
+                    }}
+                    title="Redo every posting — needed after changing the exchange rate or hours per week"
+                  >
+                    Recalculate all
+                  </button>
+                )}
+                </>
               )}
               <button
                 className="btn-ghost"
@@ -593,6 +607,7 @@ function Detail({ posting: p }) {
         <Fact label="Location" value={loc} />
         <Fact label="Arrangement" value={p.location.arrangement} />
         <Fact label="Pay (CAD/hr)" value={p.hourlyCad && payDetail(p.hourlyCad)} />
+        <Fact label="Posting states" value={p.hourlyCad && statedDetail(p.hourlyCad)} />
         <Fact label="Deadline" value={p.deadline?.raw} />
         <Fact label="Work term" value={p.workTerm?.raw} />
         <Fact label="Duration" value={p.duration?.raw} />
@@ -643,13 +658,25 @@ function Detail({ posting: p }) {
 // Showing the provider matters for auditing — if a number looks wrong it's useful
 // to know which model produced it and what the source currency was.
 function payDetail(h) {
+  // The table shows the bottom of the range; here the full span is worth seeing,
+  // along with which model read the posting.
   const how = [
-    h.basis,
-    h.currency && h.currency !== 'CAD' ? `stated in ${h.currency}` : null,
+    h.min != null && h.max != null && Math.abs(h.max - h.min) >= 0.01
+      ? `range ${formatRange(h.min, h.max)}`
+      : null,
     h.note || null,
     h.provider ? `via ${h.provider}` : null,
   ].filter(Boolean).join(' · ')
   return how ? `${h.text} — ${how}` : h.text
+}
+
+// The figure as written in the posting, so a converted number can be checked
+// against its source at a glance.
+function statedDetail(h) {
+  if (!h.source) return null
+  const { min, max, period, currency } = h.source
+  const amount = min === max ? `${min}` : `${min}–${max}`
+  return `${currency} ${amount} ${period}`
 }
 
 function Fact({ label, value }) {

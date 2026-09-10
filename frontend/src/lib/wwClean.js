@@ -383,6 +383,12 @@ export const CSV_COLUMNS = [
   ['hourlyCadMin', (r) => r.hourlyCad && r.hourlyCad.min],
   ['hourlyCadMax', (r) => r.hourlyCad && r.hourlyCad.max],
   ['hourlyCadBasis', (r) => r.hourlyCad && r.hourlyCad.basis],
+  // The figure as the posting stated it, so any converted number can be checked
+  // against its source without reopening the posting.
+  ['statedAmount', (r) => r.hourlyCad && r.hourlyCad.source &&
+    (r.hourlyCad.source.min === r.hourlyCad.source.max
+      ? r.hourlyCad.source.min
+      : `${r.hourlyCad.source.min}-${r.hourlyCad.source.max}`)],
   ['hourlyCadNote', (r) => r.hourlyCad && r.hourlyCad.note],
 ]
 
@@ -478,10 +484,11 @@ export function filterPostings(rows, filters) {
       if (m == null || m < minMonths) return false
     }
     if (minHourly != null && !Number.isNaN(minHourly)) {
-      // Compare on the TOP of the range: a posting advertising 18-32/hr does meet
-      // a floor of 30, and judging it on its minimum would hide it.
-      const top = r.hourlyCad && r.hourlyCad.max
-      if (top == null || top < minHourly) return false
+      // Compare on the BOTTOM of the range, matching the figure shown in the
+      // table: a posting advertising 18-32/hr is only guaranteed to pay 18, so a
+      // floor of 30 should not surface it on the strength of a best case.
+      const floor = r.hourlyCad && r.hourlyCad.min
+      if (floor == null || floor < minHourly) return false
     }
     if (terms.length) {
       const h = haystack(r)
@@ -500,8 +507,9 @@ export const SORTS = {
   openings: (r) => r.openings,
   applicants: (r) => r.applicants,
   durationMonths: (r) => r.duration && r.duration.months,
-  // Sorted on the top of the range, matching how the minHourly filter reads it.
-  hourlyCad: (r) => (r.hourlyCad ? r.hourlyCad.max : null),
+  // Sorted on the bottom of the range, matching both the figure in the table and
+  // the way the minHourly filter reads it.
+  hourlyCad: (r) => (r.hourlyCad ? r.hourlyCad.min : null),
   id: (r) => Number(r.id) || 0,
 }
 
