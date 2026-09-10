@@ -214,7 +214,25 @@ async function callGlm(settings, prompt, { json, temperature, signal }) {
     // The proxy passes the provider's status through, so classify on that when
     // present; otherwise this was our own backend failing.
     const status = body?.providerStatus ?? res.status
-    throw new AiError(classify(status, body?.body || raw), body?.error || `GLM HTTP ${status}`,
+
+    // Dig out what the provider actually said. Reporting only "GLM returned
+    // HTTP 429" hides the one sentence that explains the failure, which is a
+    // long way to walk for an error that names its own cause.
+    let providerMsg = null
+    try { providerMsg = JSON.parse(body?.body ?? '')?.error?.message } catch {}
+    let message = providerMsg || body?.error || `GLM HTTP ${status}`
+
+    // The specific trap this endpoint sets: a Coding Plan key is not entitled on
+    // the pay-as-you-go route, and the refusal it gets back talks about balance,
+    // so it reads as a billing problem rather than a wrong URL. Say what to do.
+    const haystack = `${providerMsg || ''} ${body?.body || ''}`
+    if (glmProtocol(baseUrl) === 'openai' &&
+        /insufficient balance|no resource package|"?1113"?/i.test(haystack)) {
+      message += ' — that is the pay-as-you-go endpoint. If this is a Coding Plan key, ' +
+                 'set the Base URL to https://api.z.ai/api/anthropic.'
+    }
+
+    throw new AiError(classify(status, body?.body || raw), message,
                       { provider: 'glm', status, body: (body?.body || raw || '').slice(0, 1500) })
   }
 
