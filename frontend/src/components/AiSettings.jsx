@@ -89,7 +89,7 @@ export default function AiSettings({ settings, onSave, onClose, saveError }) {
           onKey={set('glmKey')}
           model={draft.glmModel}
           onModel={set('glmModel')}
-          modelHint="e.g. glm-4.6"
+          modelHint="e.g. glm-4.6 — note a Coding Plan may serve its own model regardless"
           help="Routed through the compile backend, because api.z.ai refuses cross-origin browser calls."
           revealed={!!reveal.glm}
           onReveal={() => setReveal((r) => ({ ...r, glm: !r.glm }))}
@@ -101,7 +101,11 @@ export default function AiSettings({ settings, onSave, onClose, saveError }) {
             <span>Base URL</span>
             <input value={draft.glmBaseUrl} onChange={set('glmBaseUrl')} spellCheck={false} />
             <small>
-              Only <code>api.z.ai</code> and <code>open.bigmodel.cn</code> are accepted by the proxy.
+              A <strong>Coding Plan</strong> key works on <code>/api/anthropic</code> (the default) and is
+              rejected on <code>/api/paas/v4</code> with “insufficient balance” — that error means the
+              wrong endpoint, not a bad key. Pay-as-you-go credit is the other way round. The protocol is
+              taken from this URL. Only <code>api.z.ai</code> and <code>open.bigmodel.cn</code> are
+              accepted by the proxy.
             </small>
           </label>
         </Slot>

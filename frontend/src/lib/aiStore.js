@@ -8,7 +8,9 @@ export const DEFAULT_AI_SETTINGS = {
   geminiModel: 'gemini-2.5-flash',
   glmKey: '',
   glmModel: 'glm-4.6',
-  glmBaseUrl: 'https://api.z.ai/api/paas/v4',
+  // The Coding Plan is entitled on the Anthropic-compatible route, not on
+  // /paas/v4 (which bills against account balance). See glmProtocol in ai.js.
+  glmBaseUrl: 'https://api.z.ai/api/anthropic',
   usdCad: 1.37,
   hoursPerWeek: 40,
 }

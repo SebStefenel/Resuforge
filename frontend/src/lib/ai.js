@@ -173,20 +173,35 @@ async function callGemini(settings, prompt, { json, temperature, signal }) {
   return { text, provider: 'gemini', model, usage: body?.usageMetadata ?? null }
 }
 
+// Which wire protocol the configured endpoint speaks, read off the URL rather
+// than stored as a separate setting — the path already says which API it is, and
+// one fewer field is one fewer thing to get out of step with the other.
+//
+// This matters because a Coding Plan key is only entitled on the Anthropic route:
+// pointed at /paas/v4 it comes back 429 "Insufficient balance or no resource
+// package", which looks like a dead key but is the wrong endpoint.
+export const glmProtocol = (baseUrl) =>
+  /\/anthropic(\/|$)/.test(String(baseUrl || '')) ? 'anthropic' : 'openai'
+
 async function callGlm(settings, prompt, { json, temperature, signal }) {
   const key = (settings.glmKey || '').trim()
   if (!key) throw new AiError('auth', 'No GLM API key set', { provider: 'glm' })
 
   const model = (settings.glmModel || 'glm-4.6').trim()
+  const baseUrl = (settings.glmBaseUrl || 'https://api.z.ai/api/anthropic').trim()
   const res = await authFetch('/api/ai', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      baseUrl: (settings.glmBaseUrl || 'https://api.z.ai/api/paas/v4').trim(),
+      baseUrl,
+      protocol: glmProtocol(baseUrl),
       model,
       apiKey: key,
       jsonMode: !!json,
       temperature,
+      // Enough for a full batch of compensation rows plus the short thinking
+      // block the model emits even when thinking is disabled.
+      maxTokens: 4096,
       messages: [{ role: 'user', content: prompt }],
     }),
     signal,

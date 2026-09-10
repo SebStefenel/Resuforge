@@ -251,22 +251,37 @@ const AI_HOSTS = new Set([
 
 const AI_TIMEOUT = 120000
 
+// GLM speaks two protocols, and which one a key may use depends on what was
+// bought:
+//
+//   'openai'    — /paas/v4/chat/completions, pay-as-you-go, billed against
+//                 account balance. A Coding Plan key is rejected here with
+//                 code 1113 "Insufficient balance or no resource package",
+//                 which reads like a broken key but is an entitlement error.
+//   'anthropic' — /api/anthropic/v1/messages, the Claude-compatible route the
+//                 Coding Plan is actually entitled on.
+const AI_PROTOCOLS = new Set(['openai', 'anthropic'])
+const ENDPOINT_PATH = { openai: '/chat/completions', anthropic: '/v1/messages' }
+
 // Resolve a caller-supplied base URL to the exact URL we will POST to, or throw.
 // Exported for testing: this is the check that keeps the endpoint from being an
 // SSRF pivot, so it should be verifiable without standing up the whole server.
-function resolveAiTarget(baseUrl) {
+function resolveAiTarget(baseUrl, protocol = 'openai') {
+  if (!AI_PROTOCOLS.has(protocol)) throw new Error(`unknown protocol: ${protocol}`)
   const u = new URL(baseUrl) // throws on anything unparseable
   if (u.protocol !== 'https:') throw new Error('must be https')
   if (!AI_HOSTS.has(u.hostname)) throw new Error(`host not allowed: ${u.hostname}`)
   // Tolerate a trailing slash, and a baseUrl that already names the endpoint.
   const path = u.pathname.replace(/\/+$/, '')
-  return `${u.origin}${path.endsWith('/chat/completions') ? path : path + '/chat/completions'}`
+  const suffix = ENDPOINT_PATH[protocol]
+  return `${u.origin}${path.endsWith(suffix) ? path : path + suffix}`
 }
 
 module.exports.resolveAiTarget = resolveAiTarget
 
 app.post('/api/ai', requireAuth, async (req, res) => {
-  const { baseUrl, model, apiKey, messages, jsonMode, temperature } = req.body || {}
+  const { baseUrl, model, apiKey, messages, jsonMode, temperature, maxTokens } = req.body || {}
+  const protocol = req.body?.protocol || 'openai'
 
   if (!apiKey) return res.status(400).json({ error: 'No apiKey provided' })
   if (!model) return res.status(400).json({ error: 'No model provided' })
@@ -276,7 +291,7 @@ app.post('/api/ai', requireAuth, async (req, res) => {
 
   let target
   try {
-    target = resolveAiTarget(baseUrl)
+    target = resolveAiTarget(baseUrl, protocol)
   } catch (e) {
     return res.status(400).json({
       error: `Invalid baseUrl: ${e.message}`,
@@ -285,18 +300,38 @@ app.post('/api/ai', requireAuth, async (req, res) => {
   }
 
   try {
+    const anthropic = protocol === 'anthropic'
     const upstream = await fetch(target, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
+        ...(anthropic
+          ? { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }
+          : { Authorization: `Bearer ${apiKey}` }),
       },
-      body: JSON.stringify({
-        model,
-        messages,
-        ...(temperature == null ? {} : { temperature }),
-        ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
-      }),
+      body: JSON.stringify(
+        anthropic
+          ? {
+              model,
+              // Required by this API, unlike the OpenAI-shaped one.
+              max_tokens: maxTokens || 4096,
+              messages,
+              ...(temperature == null ? {} : { temperature }),
+              // Not optional in practice. Left on, GLM's coding models spend the
+              // whole token budget on a thinking block and return no text at all
+              // — a 2048-token request came back stop_reason "max_tokens" with
+              // zero output. Disabled, the same request answers in ~200 tokens.
+              // There is no response_format here either, so valid JSON is the
+              // prompt's job.
+              thinking: { type: 'disabled' },
+            }
+          : {
+              model,
+              messages,
+              ...(temperature == null ? {} : { temperature }),
+              ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
+            }
+      ),
       signal: AbortSignal.timeout(AI_TIMEOUT),
     })
 
@@ -308,6 +343,7 @@ app.post('/api/ai', requireAuth, async (req, res) => {
     if (!upstream.ok) {
       return res.status(upstream.status).json({
         error: `GLM returned HTTP ${upstream.status}`,
+        protocol,
         providerStatus: upstream.status,
         body: text.slice(0, 2000),
       })
@@ -320,10 +356,17 @@ app.post('/api/ai', requireAuth, async (req, res) => {
       return res.status(502).json({ error: 'GLM returned a non-JSON body', body: text.slice(0, 2000) })
     }
 
+    // Normalize both shapes to one. Anthropic returns a content array that can
+    // still carry a thinking block even with thinking disabled, so take the text
+    // blocks rather than the first block.
     res.json({
-      text: body?.choices?.[0]?.message?.content ?? '',
+      text: anthropic
+        ? (body?.content || []).filter((b) => b?.type === 'text').map((b) => b.text || '').join('')
+        : (body?.choices?.[0]?.message?.content ?? ''),
       usage: body?.usage ?? null,
-      finishReason: body?.choices?.[0]?.finish_reason ?? null,
+      finishReason: anthropic
+        ? (body?.stop_reason ?? null)
+        : (body?.choices?.[0]?.finish_reason ?? null),
     })
   } catch (e) {
     const timedOut = e?.name === 'TimeoutError' || /timeout/i.test(String(e?.message))
