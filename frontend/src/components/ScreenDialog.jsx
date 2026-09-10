@@ -11,11 +11,17 @@ import './ScreenDialog.css'
 const EXAMPLES = [
   'involves building or operating ML infrastructure, not just using ML',
   'is a backend or systems role rather than frontend',
-  'would suit someone whose strongest project is a compiler',
   'explicitly welcomes first or second year students',
 ]
 
-export default function ScreenDialog({ settings, postings, batchName, onDone, onClose }) {
+// Only offered once a resume is attached, since they lean on it.
+const RESUME_EXAMPLES = [
+  'I could plausibly get an interview for, given my experience',
+  'uses a language or framework already on my resume',
+  'lines up with the strongest project on my resume',
+]
+
+export default function ScreenDialog({ settings, postings, batchName, resume, onDone, onClose }) {
   const [question, setQuestion] = useState('')
   const [fields, setFields] = useState(null)     // null until pass 1 has run
   const [stage, setStage] = useState('ask')      // ask | fields | running | done
@@ -24,6 +30,10 @@ export default function ScreenDialog({ settings, postings, batchName, onDone, on
   const [result, setResult] = useState(null)
   const [name, setName] = useState('')
   const [abort, setAbort] = useState(null)
+  // On by default when a resume is attached: someone who sent one across almost
+  // always means their questions to be read against it.
+  const [useResume, setUseResume] = useState(!!resume)
+  const resumeText = useResume && resume ? resume.text : null
 
   const saving = fields ? projectionSaving(postings, fields) : null
 
@@ -31,7 +41,7 @@ export default function ScreenDialog({ settings, postings, batchName, onDone, on
     setError(null)
     setStage('running')
     try {
-      const r = await chooseFields(settings, question.trim())
+      const r = await chooseFields(settings, question.trim(), { resume: resumeText })
       setFields(r.fields)
       setName(suggestName(question))
       setStage('fields')
@@ -50,6 +60,7 @@ export default function ScreenDialog({ settings, postings, batchName, onDone, on
       const r = await screenPostings(settings, postings, question.trim(), fields, {
         signal: ctrl.signal,
         onProgress: setProgress,
+        resume: resumeText,
       })
       setResult(r)
       setStage('done')
@@ -72,6 +83,7 @@ export default function ScreenDialog({ settings, postings, batchName, onDone, on
       question: question.trim(),
       fields,
       stats: result.stats,
+      resumeName: resumeText ? resume.name : null,
     })
   }
 
@@ -95,9 +107,22 @@ export default function ScreenDialog({ settings, postings, batchName, onDone, on
           />
         </label>
 
+        {resume && (
+          <label className="sd-resume">
+            <input
+              type="checkbox"
+              checked={useResume}
+              onChange={(e) => { setUseResume(e.target.checked); setFields(null); setStage('ask') }}
+              disabled={stage === 'running'}
+            />
+            Judge against my resume (<strong>{resume.name}</strong>) — sent with every request,
+            so questions can say “my”, “I” or name a project on it.
+          </label>
+        )}
+
         {stage === 'ask' && (
           <div className="sd-examples">
-            {EXAMPLES.map((ex) => (
+            {[...(useResume ? RESUME_EXAMPLES : []), ...EXAMPLES].map((ex) => (
               <button key={ex} className="sd-example" onClick={() => setQuestion(ex)}>{ex}</button>
             ))}
           </div>

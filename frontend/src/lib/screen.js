@@ -60,13 +60,23 @@ const MAX_BATCH = 40
 // ── pass 1: which fields does this question need? ────────────────────────────
 
 export async function chooseFields(settings, question, opts = {}) {
+  const resume = opts.resume || null
   const menu = FIELD_KEYS.map((k) => `- ${k}: ${SCREEN_FIELDS[k].describe}`).join('\n')
   const prompt = `Someone is filtering co-op job postings with this requirement:
 
 """
 ${question}
 """
+${resume ? `
+They may be referring to their own resume, which reads:
 
+"""
+${resume}
+"""
+
+The resume is given to the judge separately for every posting, so do NOT pick fields
+just because the resume mentions them — pick the posting fields the comparison needs.
+` : ''}
 Each posting has these fields available:
 ${menu}
 
@@ -109,20 +119,29 @@ export function projectPosting(p, fields) {
 }
 
 /** How many projected postings fit comfortably in one request. */
-export function batchSizeFor(projected) {
+export function batchSizeFor(projected, overheadChars = 0) {
   if (!projected.length) return MIN_BATCH
   const sample = projected.slice(0, 24)
   const avg = sample.reduce((n, p) => n + JSON.stringify(p).length, 0) / sample.length
-  return Math.max(MIN_BATCH, Math.min(MAX_BATCH, Math.floor(TARGET_CHARS / Math.max(avg, 80))))
+  const budget = Math.max(TARGET_CHARS - overheadChars, 2000)
+  return Math.max(MIN_BATCH, Math.min(MAX_BATCH, Math.floor(budget / Math.max(avg, 80))))
 }
 
-function judgePrompt(question, items) {
+function judgePrompt(question, items, resume) {
   return `Decide, for each job posting below, whether it satisfies this requirement:
 
 """
 ${question}
 """
 
+${resume ? `
+This is the applicant's resume. Where the requirement refers to them, their experience or
+their projects, judge against this:
+
+"""
+${resume}
+"""
+` : ''}
 Rules:
 - Judge only on the information given. You are shown a deliberately limited set of fields.
 - If what you are shown is not enough to tell, answer false. Do not guess, and do not assume a
@@ -146,10 +165,13 @@ ${JSON.stringify(items, null, 1)}`
  * dropping them — an unanswered posting must never look like a rejected one.
  */
 export async function screenPostings(settings, postings, question, fields, opts = {}) {
-  const { signal, onProgress, onNote, pacingMs = 1000 } = opts
+  const { signal, onProgress, onNote, pacingMs = 1000, resume = null } = opts
 
   const projected = postings.map((p) => projectPosting(p, fields))
-  const size = batchSizeFor(projected)
+  // The resume is repeated in every request, so it comes out of the same budget
+  // the postings share — otherwise a long resume plus a full batch would push
+  // requests past what the model will answer in one go.
+  const size = batchSizeFor(projected, resume ? resume.length : 0)
   const stats = { total: postings.length, judged: 0, kept: 0, failed: 0, batches: 0, byProvider: {}, errors: [] }
   const judgments = {}
 
@@ -159,7 +181,7 @@ export async function screenPostings(settings, postings, question, fields, opts 
     stats.batches++
 
     try {
-      const res = await ask(settings, judgePrompt(question, slice), {
+      const res = await ask(settings, judgePrompt(question, slice, resume), {
         json: true, temperature: 0, signal, onNote,
       })
       const rows = parseJsonLoose(res.text)

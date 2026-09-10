@@ -13,7 +13,7 @@
 //
 // Keyed by user id so two accounts sharing a browser don't see each other's
 // imports.
-import { migrate } from './batches'
+import { migrate, emptyWorkspace } from './batches'
 
 const DB_NAME = 'resuforge_ww'
 const DB_VERSION = 1
@@ -74,6 +74,25 @@ export async function saveWorkspace(userId, workspace) {
 export async function clearWorkspace(userId) {
   try {
     await op('readwrite', (s) => s.delete(userId))
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Attach a resume snapshot to the workspace, creating the workspace if the user
+ * hasn't imported anything yet — sending a resume across before importing
+ * postings is a perfectly reasonable order to do things in.
+ *
+ * Called from the resume editor, which does not hold the workspace in state, so
+ * it reads, sets and writes in one go.
+ */
+export async function attachResume(userId, resume) {
+  try {
+    const ws = migrate((await op('readonly', (s) => s.get(userId))) || null) || emptyWorkspace()
+    const next = { ...ws, resume }
+    await op('readwrite', (s) => s.put(next, userId))
     return true
   } catch {
     return false

@@ -385,6 +385,13 @@ export default function WaterlooWorks({ user, nav, ai, onOpenAi }) {
         onChange={(e) => { handleFiles(e.target.files, { asNew: importAsNew.current }); e.target.value = '' }}
       />
 
+      {ws?.resume && (
+        <ResumeChip
+          resume={ws.resume}
+          onDetach={() => persist({ ...wsRef.current, resume: null })}
+        />
+      )}
+
       {hasBatches && (
         <BatchBar
           ws={ws}
@@ -499,6 +506,7 @@ export default function WaterlooWorks({ user, nav, ai, onOpenAi }) {
           settings={ai}
           postings={postings}
           batchName={batch.name}
+          resume={ws?.resume || null}
           onDone={handleScreened}
           onClose={() => setScreening(false)}
         />
@@ -512,6 +520,28 @@ export default function WaterlooWorks({ user, nav, ai, onOpenAi }) {
 }
 
 // ---------------------------------------------------------------------------
+
+// The resume the editor sent across, and what it's for. Shown as its own strip
+// rather than buried in the screen dialog, because it silently changes how every
+// screen judges — that should be visible without opening anything.
+function ResumeChip({ resume, onDetach }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="ww-resume">
+      <span className="ww-resume-label">Resume attached</span>
+      <strong>{resume.name}</strong>
+      <span className="ww-resume-meta">
+        {resume.chars.toLocaleString()} chars · sent {new Date(resume.attachedAt).toLocaleString()}
+        {resume.truncated && ' · truncated'}
+      </span>
+      <button className="ai-link" onClick={() => setOpen((o) => !o)}>
+        {open ? 'Hide' : 'What the AI sees'}
+      </button>
+      <button className="ai-link" onClick={onDetach}>Detach</button>
+      {open && <pre className="ww-resume-text">{resume.text}</pre>}
+    </div>
+  )
+}
 
 function BatchBar({ ws, active, onSwitch, onNewFromFile, onImportMore, onScreen, onRename, onDelete, canScreen }) {
   return (

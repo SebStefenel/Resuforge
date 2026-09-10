@@ -130,3 +130,18 @@
   border-top: 1px solid var(--border);
   padding-top: 12px;
 }
+
+.sd-resume {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  background: var(--surface);
+  border-radius: 4px;
+  padding: 8px 10px;
+  margin-bottom: 12px;
+}
+
+.sd-resume input { margin-top: 2px; flex-shrink: 0; }

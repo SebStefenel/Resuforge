@@ -11,6 +11,8 @@ import {
   readLocalBackup, writeLocalBackup, clearLocalBackup,
 } from './lib/resumeStore'
 import { authFetch, API_URL } from './lib/api'
+import { attachResume } from './lib/wwStore'
+import { buildResumeContext } from './lib/resumeContext'
 import {
   normalizeCategories, normalizeCategory, resolveTemplate, combinationCount,
   enumerateSelections, comboFolder, resolveTemplateWithMap, mapResolvedLineToTemplate,
@@ -355,6 +357,30 @@ export default function App({ user, nav }) {
     clearTimeout(saveTimer.current)
     if (dirty.current && canSave.current) doSaveRef.current()
   }, [])
+
+  // Hand the resume to the WaterlooWorks section as context for its AI screens.
+  // A snapshot of the resolved document, not a live link: a shortlist should stay
+  // explainable against the resume it was actually judged on, rather than being
+  // silently reinterpreted every time this editor changes.
+  const [sentToWW, setSentToWW] = useState(null)
+  const handleSendToWW = useCallback(async () => {
+    const ctx = buildResumeContext({
+      resumeName, template, categories, selected, resumeId: currentId,
+    })
+    if (!ctx.text.trim()) {
+      setSentToWW('empty')
+      return
+    }
+    const ok = await attachResume(user.id, ctx)
+    setSentToWW(ok ? 'ok' : 'fail')
+    if (ok) window.location.hash = '#/ww'
+  }, [resumeName, template, categories, selected, currentId, user.id])
+
+  useEffect(() => {
+    if (!sentToWW) return
+    const t = setTimeout(() => setSentToWW(null), 4000)
+    return () => clearTimeout(t)
+  }, [sentToWW])
 
   // Filesystem-safe base name, falling back to "resume" when empty.
   const safeName = useMemo(
@@ -1089,6 +1115,16 @@ export default function App({ user, nav }) {
           <span className="user-email" title={user.email}>{user.email}</span>
           <button className="btn-ghost" onClick={() => supabase.auth.signOut()}>Sign out</button>
           <button className="btn-ghost" onClick={handleLoadFile}>Load .tex</button>
+          <button
+            className="btn-ghost"
+            onClick={handleSendToWW}
+            title="Attach this resume to the WaterlooWorks section, so AI screens can judge postings against it"
+          >
+            {sentToWW === 'ok' ? 'Sent!'
+              : sentToWW === 'empty' ? 'Resume is empty'
+              : sentToWW === 'fail' ? 'Send failed'
+              : 'Send resume to WW'}
+          </button>
           <button
             className="btn-ghost"
             onClick={handleCopyLatex}
