@@ -1,25 +1,31 @@
-// The WaterlooWorks section: import a scrape, normalize it, browse it, export it.
+// The WaterlooWorks section: import scrapes, normalize them, screen them, export them.
 //
 // The scraper extension (WW-Scraper) collects postings into a JSON file and its
 // "Export to ResuForge" button drops you here. Everything downstream of that
 // file — the normalization that used to be `tools/clean.js`, the completeness
-// report it printed, and the postings.clean.json / postings.csv it wrote — now
+// report it printed, and the postings.clean.json / postings.csv it wrote —
 // happens in this page. See lib/wwClean.js.
+//
+// Postings are organized into named batches over one shared pool (lib/batches.js).
+// A batch comes from an import, from an AI screen that keeps only the postings
+// matching a subjective question (lib/screen.js), or from removing rows by hand.
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { supabase } from '../lib/supabaseClient'
-import { loadDataset, saveDataset, clearDataset } from '../lib/wwStore'
+import { loadWorkspace, saveWorkspace, clearWorkspace } from '../lib/wwStore'
+import {
+  emptyWorkspace, activeBatch, batchPostings, addImportBatch, deriveBatch,
+  removeFromBatch, renameBatch, deleteBatch, setActive, updatePostings,
+} from '../lib/batches'
 import { hasAnyKey } from '../lib/ai'
 import { normalizeAll, pendingCount, formatRange } from '../lib/compensation'
-import {
-  mergeDocuments, buildReport, toCsv, toCleanJson, tally,
-  filterPostings, sortPostings, EMPTY_FILTERS,
-} from '../lib/wwClean'
+import { toCsv, toCleanJson, tally, filterPostings, sortPostings, EMPTY_FILTERS } from '../lib/wwClean'
+import ScreenDialog from './ScreenDialog'
 import './WaterlooWorks.css'
 
 const PAGE = 200 // rows added per "show more" — full tables run to a few thousand
 
 export default function WaterlooWorks({ user, nav, ai, aiLoaded, onOpenAi }) {
-  const [dataset, setDataset] = useState(null)
+  const [ws, setWs] = useState(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(null) // status line while parsing
   const [notice, setNotice] = useState(null) // { kind: 'error' | 'warn' | 'ok', text }
@@ -29,28 +35,51 @@ export default function WaterlooWorks({ user, nav, ai, aiLoaded, onOpenAi }) {
   const [reportOpen, setReportOpen] = useState(false)
   const [limit, setLimit] = useState(PAGE)
   const [dragging, setDragging] = useState(false)
+  const [screening, setScreening] = useState(false)
   const fileInput = useRef(null)
+  // Set while the file picker is open for "new batch from file" rather than
+  // "import more", since one <input> serves both.
+  const importAsNew = useRef(false)
 
   // Compensation normalization: { done, total, failed, note } while a run is in
   // flight, null otherwise. The AbortController is what the Stop button pulls.
   const [comp, setComp] = useState(null)
   const compAbort = useRef(null)
-  // Set once a run has been started for the dataset on screen, so the automatic
-  // run fires once per import rather than every time this component re-renders.
+  // Which batch the automatic run has already fired for, so it happens once per
+  // new import rather than on every render.
   const autoRunFor = useRef(null)
+
+  // The workspace in a ref, so callbacks that run across awaits always persist
+  // the latest one rather than whatever was captured when they were created.
+  const wsRef = useRef(null)
+  wsRef.current = ws
+
+  const persist = useCallback(async (next) => {
+    setWs(next)
+    wsRef.current = next
+    const ok = await saveWorkspace(user.id, next)
+    if (!ok) setNotice({ kind: 'warn', text: "Couldn't save to this browser — changes are in memory only." })
+    return ok
+  }, [user.id])
 
   useEffect(() => {
     let cancelled = false
-    loadDataset(user.id).then((d) => {
+    loadWorkspace(user.id).then((w) => {
       if (cancelled) return
-      if (d) setDataset(d)
+      if (w) { setWs(w); wsRef.current = w }
       setLoading(false)
     })
     return () => { cancelled = true }
   }, [user.id])
 
+  const batch = ws ? activeBatch(ws) : null
+  const postings = useMemo(
+    () => (ws && batch ? batchPostings(ws, batch.id) : []),
+    [ws, batch]
+  )
+
   // ── import ────────────────────────────────────────────────────────────────
-  const handleFiles = useCallback(async (fileList) => {
+  const handleFiles = useCallback(async (fileList, { asNew = false } = {}) => {
     const files = [...(fileList || [])]
     if (!files.length) return
 
@@ -79,117 +108,27 @@ export default function WaterlooWorks({ user, nav, ai, aiLoaded, onOpenAi }) {
     setBusy('Normalizing postings…')
     await new Promise((r) => setTimeout(r, 0))
 
-    const previous = dataset ? dataset.postings : []
-    const merged = mergeDocuments(docs, { into: previous })
-    const sources = [...(dataset ? dataset.sources : []), ...merged.sources]
-    const report = buildReport(merged.postings, { ...merged, sources })
-    const next = {
-      postings: merged.postings,
-      report,
-      sources,
-      importedAt: new Date().toISOString(),
-    }
-
-    setDataset(next)
+    const base = wsRef.current || emptyWorkspace()
+    const { ws: next, merged, batch: created } = addImportBatch(base, docs)
     setSelectedId(null)
     setLimit(PAGE)
     setBusy(null)
+    await persist(next)
 
-    const stored = await saveDataset(user.id, next)
-    const added = merged.postings.length - previous.length
-    const problems = [
-      ...bad,
-      ...merged.skipped.map((s) => `${s.name}: ${s.reason}`),
-      ...(stored ? [] : ["Couldn't save to this browser — the import is in memory only."]),
-    ]
+    const problems = [...bad, ...merged.skipped.map((s) => `${s.name}: ${s.reason}`)]
     setNotice({
       kind: problems.length ? 'warn' : 'ok',
       text:
-        `Imported ${merged.read} records from ${merged.sources.length} file` +
-        `${merged.sources.length === 1 ? '' : 's'} — ${added} new, ` +
+        `Imported ${merged.read} records into “${created.name}” — ${created.ids.length} postings, ` +
         `${merged.duplicates} duplicate id${merged.duplicates === 1 ? '' : 's'} collapsed.` +
         (problems.length ? '\n' + problems.join('\n') : ''),
     })
-  }, [dataset, user.id])
+  }, [persist])
 
-  // ── compensation normalization ────────────────────────────────────────────
-  // Sends each posting's compensation blurb to the AI and stores the equivalent
-  // hourly wage in CAD as `hourlyCad`. Batched, paced, cancellable, and
-  // resumable: postings that already carry a figure are skipped, so a cancelled
-  // or partly failed run picks up where it left off.
-  const runCompensation = useCallback(async ({ force = false } = {}) => {
-    if (!dataset || compAbort.current) return
-    const controller = new AbortController()
-    compAbort.current = controller
-    setComp({ done: 0, total: 0, failed: 0, note: 'starting…' })
-
-    try {
-      const { postings: next, stats } = await normalizeAll(ai, dataset.postings, {
-        signal: controller.signal,
-        force,
-        onNote: (note) => setComp((c) => (c ? { ...c, note } : c)),
-        // A run over 570 postings takes minutes, so results land on screen as they
-        // arrive and are checkpointed to IndexedDB periodically — a reload partway
-        // through keeps what the run already paid for.
-        //
-        // Not every batch, though: the dataset is a couple of megabytes, and
-        // writing all of it ~48 times would cost more than the AI calls. Every
-        // fifth batch, plus the final write after the loop, is enough.
-        //
-        // `sources`, `report` and `importedAt` can't change during a run, so
-        // rebuilding the record from the dataset captured at start is safe, and
-        // keeps this side effect out of the setState updater.
-        onProgress: (postings, st) => {
-          setComp({ done: st.done, total: st.total, failed: st.failed, note: null })
-          setDataset((d) => (d ? { ...d, postings } : d))
-          if (st.batches % 5 === 0) saveDataset(user.id, { ...dataset, postings })
-        },
-      })
-
-      const updated = { ...dataset, postings: next }
-      setDataset(updated)
-      await saveDataset(user.id, updated)
-
-      const used = Object.entries(stats.byProvider)
-        .filter(([k]) => k && k !== 'null')
-        .map(([k, n]) => `${n} via ${k}`)
-        .join(', ')
-      setNotice({
-        kind: stats.failed ? 'warn' : 'ok',
-        text:
-          `Compensation normalized for ${stats.done} postings` +
-          (used ? ` (${used})` : '') +
-          (stats.failed ? `, ${stats.failed} could not be read.` : '.') +
-          (stats.errors.length ? '\n' + [...new Set(stats.errors)].slice(0, 4).join('\n') : ''),
-      })
-    } catch (err) {
-      if (err?.name !== 'AbortError') {
-        setNotice({ kind: 'error', text: `Compensation normalization failed: ${err.message || err}` })
-      }
-    } finally {
-      compAbort.current = null
-      setComp(null)
-    }
-  }, [dataset, ai, user.id])
-
-  const stopCompensation = () => compAbort.current?.abort()
-
-  // Run it automatically once a dataset is on screen and a key is configured —
-  // "when it gets the jobs, normalize compensation". Keyed on importedAt so it
-  // fires once per import, not on every render, and never while a run is live.
-  useEffect(() => {
-    if (!dataset || !aiLoaded || !hasAnyKey(ai)) return
-    if (compAbort.current) return
-    if (autoRunFor.current === dataset.importedAt) return
-    if (pendingCount(dataset.postings) === 0) return
-    autoRunFor.current = dataset.importedAt
-    runCompensation()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dataset?.importedAt, aiLoaded, ai, dataset, runCompensation])
-
-  // Abandon an in-flight run if the section is left, rather than letting it
-  // write into a dataset nobody is looking at.
-  useEffect(() => () => compAbort.current?.abort(), [])
+  const pickFiles = (asNew) => {
+    importAsNew.current = asNew
+    fileInput.current?.click()
+  }
 
   const onDrop = (e) => {
     e.preventDefault()
@@ -207,18 +146,141 @@ export default function WaterlooWorks({ user, nav, ai, aiLoaded, onOpenAi }) {
     if (!e.currentTarget.contains(e.relatedTarget)) setDragging(false)
   }
 
-  const handleClear = async () => {
-    if (!confirm('Remove the imported postings from this browser?')) return
-    await clearDataset(user.id)
-    setDataset(null)
+  // ── batches ───────────────────────────────────────────────────────────────
+  const switchBatch = (id) => {
+    setSelectedId(null)
+    setLimit(PAGE)
+    persist(setActive(wsRef.current, id))
+  }
+
+  const handleRename = () => {
+    const name = prompt('Rename batch', batch.name)
+    if (name) persist(renameBatch(wsRef.current, batch.id, name))
+  }
+
+  const handleDeleteBatch = () => {
+    if (!confirm(`Delete the batch “${batch.name}”?\n\nPostings it shares with other batches are kept; any it alone held are removed.`)) return
+    setSelectedId(null)
+    persist(deleteBatch(wsRef.current, batch.id))
+  }
+
+  const handleRemove = (id) => {
+    if (selectedId === id) setSelectedId(null)
+    persist(removeFromBatch(wsRef.current, batch.id, [id]))
+  }
+
+  const handleClearAll = async () => {
+    if (!confirm('Remove every batch and posting from this browser?')) return
+    await clearWorkspace(user.id)
+    setWs(null)
+    wsRef.current = null
     setSelectedId(null)
     setFilters(EMPTY_FILTERS)
     setNotice(null)
   }
 
-  // ── derived views ─────────────────────────────────────────────────────────
-  const postings = dataset ? dataset.postings : []
+  // A screen produces a new batch over the postings it kept, carrying the
+  // question and the per-posting reasons so the batch can explain itself later.
+  const handleScreened = ({ name, ids, judgments, question, fields, stats }) => {
+    const { ws: next, batch: created } = deriveBatch(wsRef.current, {
+      name,
+      ids,
+      judgments,
+      origin: { kind: 'ai', question, fields, parentId: batch.id, parentName: batch.name, stats },
+    })
+    setScreening(false)
+    setSelectedId(null)
+    setLimit(PAGE)
+    persist(next)
+    setNotice({
+      kind: 'ok',
+      text: `“${created.name}” — ${ids.length} of ${stats.total} postings matched, judged on ${fields.join(', ')}.`,
+    })
+  }
 
+  // ── compensation normalization ────────────────────────────────────────────
+  // Sends each posting's compensation blurb to the AI and stores the equivalent
+  // hourly wage in CAD as `hourlyCad`. Batched, paced, cancellable, and
+  // resumable: postings that already carry a figure are skipped, so a cancelled
+  // or partly failed run picks up where it left off.
+  //
+  // Results are written to the shared pool, so a wage computed while looking at
+  // one batch is immediately right in every other batch holding that posting.
+  const runCompensation = useCallback(async ({ force = false } = {}) => {
+    const current = wsRef.current
+    if (!current || compAbort.current) return
+    const target = activeBatch(current)
+    if (!target) return
+    const rows = batchPostings(current, target.id)
+
+    const controller = new AbortController()
+    compAbort.current = controller
+    setComp({ done: 0, total: 0, failed: 0, note: 'starting…' })
+
+    try {
+      const { postings: updated, stats } = await normalizeAll(ai, rows, {
+        signal: controller.signal,
+        force,
+        onNote: (note) => setComp((c) => (c ? { ...c, note } : c)),
+        // A run over 570 postings takes minutes, so results land on screen as they
+        // arrive and are checkpointed to IndexedDB periodically — a reload partway
+        // through keeps what the run already paid for. Not every batch, though:
+        // the workspace is a couple of megabytes, and writing all of it ~48 times
+        // would cost more than the AI calls.
+        onProgress: (rowsNow, st) => {
+          setComp({ done: st.done, total: st.total, failed: st.failed, note: null })
+          const merged = updatePostings(wsRef.current, rowsNow)
+          setWs(merged)
+          wsRef.current = merged
+          if (st.batches % 5 === 0) saveWorkspace(user.id, merged)
+        },
+      })
+
+      await persist(updatePostings(wsRef.current, updated))
+
+      const used = Object.entries(stats.byProvider)
+        .filter(([k]) => k && k !== 'null')
+        .map(([k, n]) => `${n} via ${k}`)
+        .join(', ')
+      setNotice({
+        kind: stats.failed ? 'warn' : 'ok',
+        text:
+          `Compensation normalized for ${stats.done} postings` +
+          (used ? ` (${used})` : '') +
+          (stats.skipped ? `, ${stats.skipped} had no figure to read` : '') +
+          (stats.failed ? `, ${stats.failed} could not be read.` : '.') +
+          (stats.errors.length ? '\n' + [...new Set(stats.errors)].slice(0, 4).join('\n') : ''),
+      })
+    } catch (err) {
+      if (err?.name !== 'AbortError') {
+        setNotice({ kind: 'error', text: `Compensation normalization failed: ${err.message || err}` })
+      }
+    } finally {
+      compAbort.current = null
+      setComp(null)
+    }
+  }, [ai, user.id, persist])
+
+  const stopCompensation = () => compAbort.current?.abort()
+
+  // Run it automatically once a batch is on screen and a key is configured —
+  // "when it gets the jobs, normalize compensation". Keyed on the batch id so it
+  // fires once per new batch, not on every render, and never while a run is live.
+  useEffect(() => {
+    if (!batch || !aiLoaded || !hasAnyKey(ai)) return
+    if (compAbort.current) return
+    if (autoRunFor.current === batch.id) return
+    if (pendingCount(postings) === 0) return
+    autoRunFor.current = batch.id
+    runCompensation()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [batch?.id, aiLoaded, ai, postings, runCompensation])
+
+  // Abandon an in-flight run if the section is left, rather than letting it
+  // write into a workspace nobody is looking at.
+  useEffect(() => () => compAbort.current?.abort(), [])
+
+  // ── derived views ─────────────────────────────────────────────────────────
   const facets = useMemo(() => ({
     arrangements: tally(postings, (r) => r.location.arrangement),
     cities: tally(postings, (r) => r.location.city),
@@ -257,79 +319,66 @@ export default function WaterlooWorks({ user, nav, ai, aiLoaded, onOpenAi }) {
     setTimeout(() => URL.revokeObjectURL(url), 10000)
   }
 
+  const safeName = (batch?.name || 'postings').replace(/[\\/:*?"<>|]+/g, '_')
   const downloadJson = () =>
-    download('postings.clean.json', toCleanJson(visible, dataset.sources), 'application/json')
-  const downloadCsv = () => download('postings.csv', toCsv(visible), 'text/csv')
+    download(`${safeName}.clean.json`, toCleanJson(visible, batch?.origin?.sources || []), 'application/json')
+  const downloadCsv = () => download(`${safeName}.csv`, toCsv(visible), 'text/csv')
 
   // ── render ────────────────────────────────────────────────────────────────
+  const hasBatches = !!(ws && ws.batches.length)
+
   return (
     <div className="ww" onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
       <header className="topbar">
         <div className="topbar-left">
           <span className="logo">ResuForge</span>
           {nav}
-          {dataset && (
+          {batch && (
             <span className="ww-count">
               <strong>{postings.length}</strong> postings
               {filtered && <> · <strong>{visible.length}</strong> shown</>}
-              <span className="ww-imported">
-                imported {new Date(dataset.importedAt).toLocaleString()}
-              </span>
             </span>
           )}
         </div>
         <div className="topbar-actions">
           <span className="user-email" title={user.email}>{user.email}</span>
           <button className="btn-ghost" onClick={() => supabase.auth.signOut()}>Sign out</button>
-          {dataset && (
+          {hasBatches && (
             <>
-              <button className="btn-ghost" onClick={() => fileInput.current?.click()}>
-                Import more…
-              </button>
               {comp ? (
                 <button className="btn-ghost" onClick={stopCompensation}>Stop AI</button>
               ) : (
                 <>
-                <button
-                  className="btn-ghost"
-                  onClick={() => (hasAnyKey(ai) ? runCompensation() : onOpenAi())}
-                  title={
-                    hasAnyKey(ai)
-                      ? 'Convert each posting\'s compensation text to an hourly CAD wage'
-                      : 'Add an AI key first'
-                  }
-                >
-                  {pending > 0 ? `Normalize pay (${pending})` : 'Normalize pay'}
-                </button>
-                {postings.length > pending && (
                   <button
                     className="btn-ghost"
-                    onClick={() => {
-                      if (confirm(`Recalculate pay for all ${postings.length} postings? This re-runs the AI over every one, including those already done.`))
-                        runCompensation({ force: true })
-                    }}
-                    title="Redo every posting — needed after changing the exchange rate or hours per week"
+                    onClick={() => (hasAnyKey(ai) ? runCompensation() : onOpenAi())}
+                    title={hasAnyKey(ai)
+                      ? "Convert each posting's compensation text to an hourly CAD wage"
+                      : 'Add an AI key first'}
                   >
-                    Recalculate all
+                    {pending > 0 ? `Normalize pay (${pending})` : 'Normalize pay'}
                   </button>
-                )}
+                  {postings.length > pending && (
+                    <button
+                      className="btn-ghost"
+                      onClick={() => {
+                        if (confirm(`Recalculate pay for all ${postings.length} postings in this batch?`))
+                          runCompensation({ force: true })
+                      }}
+                      title="Redo every posting — needed after changing the exchange rate or hours per week"
+                    >
+                      Recalculate all
+                    </button>
+                  )}
                 </>
               )}
-              <button
-                className="btn-ghost"
-                onClick={downloadJson}
-                title={`Write postings.clean.json for the ${visible.length} postings shown`}
-              >
+              <button className="btn-ghost" onClick={downloadJson} title={`postings.clean.json for the ${visible.length} shown`}>
                 Clean JSON
               </button>
-              <button
-                className="btn-ghost"
-                onClick={downloadCsv}
-                title={`Write postings.csv for the ${visible.length} postings shown`}
-              >
+              <button className="btn-ghost" onClick={downloadCsv} title={`postings.csv for the ${visible.length} shown`}>
                 CSV
               </button>
-              <button className="btn-danger" onClick={handleClear}>Clear</button>
+              <button className="btn-danger" onClick={handleClearAll}>Clear all</button>
             </>
           )}
         </div>
@@ -341,8 +390,22 @@ export default function WaterlooWorks({ user, nav, ai, aiLoaded, onOpenAi }) {
         accept=".json,application/json"
         multiple
         hidden
-        onChange={(e) => { handleFiles(e.target.files); e.target.value = '' }}
+        onChange={(e) => { handleFiles(e.target.files, { asNew: importAsNew.current }); e.target.value = '' }}
       />
+
+      {hasBatches && (
+        <BatchBar
+          ws={ws}
+          active={batch}
+          onSwitch={switchBatch}
+          onNewFromFile={() => pickFiles(true)}
+          onImportMore={() => pickFiles(false)}
+          onScreen={() => (hasAnyKey(ai) ? setScreening(true) : onOpenAi())}
+          onRename={handleRename}
+          onDelete={handleDeleteBatch}
+          canScreen={postings.length > 0}
+        />
+      )}
 
       {notice && (
         <div className={`ww-notice ww-notice--${notice.kind}`}>
@@ -370,12 +433,8 @@ export default function WaterlooWorks({ user, nav, ai, aiLoaded, onOpenAi }) {
 
       {loading ? (
         <div className="ww-empty"><p>Loading…</p></div>
-      ) : !dataset ? (
-        <EmptyState
-          dragging={dragging}
-          busy={busy}
-          onPick={() => fileInput.current?.click()}
-        />
+      ) : !hasBatches ? (
+        <EmptyState dragging={dragging} busy={busy} onPick={() => pickFiles(true)} />
       ) : (
         <>
           <Filters
@@ -389,19 +448,25 @@ export default function WaterlooWorks({ user, nav, ai, aiLoaded, onOpenAi }) {
             busy={busy}
           />
 
-          <button
-            className="ww-report-toggle"
-            onClick={() => setReportOpen((o) => !o)}
-            aria-expanded={reportOpen}
-          >
-            {reportOpen ? '▾' : '▸'} Import report
-            {dataset.report.missing.length > 0 && (
-              <span className="ww-report-badge">
-                {dataset.report.missing.length} field{dataset.report.missing.length === 1 ? '' : 's'} incomplete
-              </span>
-            )}
-          </button>
-          {reportOpen && <Report report={dataset.report} />}
+          {batch?.origin?.kind === 'ai' && <ScreenNote batch={batch} />}
+
+          {batch?.report && (
+            <>
+              <button
+                className="ww-report-toggle"
+                onClick={() => setReportOpen((o) => !o)}
+                aria-expanded={reportOpen}
+              >
+                {reportOpen ? '▾' : '▸'} Import report
+                {batch.report.missing.length > 0 && (
+                  <span className="ww-report-badge">
+                    {batch.report.missing.length} field{batch.report.missing.length === 1 ? '' : 's'} incomplete
+                  </span>
+                )}
+              </button>
+              {reportOpen && <Report report={batch.report} />}
+            </>
+          )}
 
           <div className="ww-body">
             <div className="ww-table-wrap">
@@ -411,38 +476,106 @@ export default function WaterlooWorks({ user, nav, ai, aiLoaded, onOpenAi }) {
                 onSort={toggleSort}
                 selectedId={selectedId}
                 onSelect={setSelectedId}
+                onRemove={handleRemove}
+                judgments={batch?.judgments}
               />
               {visible.length === 0 && (
-                <p className="ww-no-match">Nothing matches these filters.</p>
+                <p className="ww-no-match">
+                  {postings.length === 0 ? 'This batch is empty.' : 'Nothing matches these filters.'}
+                </p>
               )}
               {limit < visible.length && (
                 <div className="ww-more">
                   <button className="btn-ghost" onClick={() => setLimit((l) => l + PAGE)}>
                     Show {Math.min(PAGE, visible.length - limit)} more
                   </button>
-                  <span className="ww-more-note">
-                    {limit} of {visible.length}
-                  </span>
+                  <span className="ww-more-note">{limit} of {visible.length}</span>
                 </div>
               )}
             </div>
             <aside className="ww-detail">
               {selected
-                ? <Detail posting={selected} />
+                ? <Detail posting={selected} reason={batch?.judgments?.[selected.id]?.reason} />
                 : <p className="ww-detail-hint">Select a posting to see the full record.</p>}
             </aside>
           </div>
         </>
       )}
 
-      {dragging && dataset && (
-        <div className="ww-drop-overlay">Drop to import into this dataset</div>
+      {screening && batch && (
+        <ScreenDialog
+          settings={ai}
+          postings={postings}
+          batchName={batch.name}
+          onDone={handleScreened}
+          onClose={() => setScreening(false)}
+        />
+      )}
+
+      {dragging && hasBatches && (
+        <div className="ww-drop-overlay">Drop to import as a new batch</div>
       )}
     </div>
   )
 }
 
 // ---------------------------------------------------------------------------
+
+function BatchBar({ ws, active, onSwitch, onNewFromFile, onImportMore, onScreen, onRename, onDelete, canScreen }) {
+  return (
+    <div className="ww-batches">
+      <div className="ww-batch-tabs">
+        {ws.batches.map((b) => (
+          <button
+            key={b.id}
+            className={`ww-batch${b.id === active?.id ? ' ww-batch--active' : ''}`}
+            onClick={() => onSwitch(b.id)}
+            title={describeBatch(b)}
+          >
+            {b.origin?.kind === 'ai' && <span className="ww-batch-mark" title="Created by an AI screen">◆</span>}
+            {b.name}
+            <span className="ww-batch-n">{b.ids.length}</span>
+          </button>
+        ))}
+      </div>
+      <div className="ww-batch-actions">
+        <button className="btn-ghost" onClick={onScreen} disabled={!canScreen}
+                title="Ask a question and keep only the postings that meet it">
+          Screen with AI…
+        </button>
+        <button className="btn-ghost" onClick={onNewFromFile}>New batch from file…</button>
+        <button className="btn-ghost" onClick={onImportMore}>Import more…</button>
+        <button className="btn-ghost" onClick={onRename} disabled={!active}>Rename</button>
+        <button className="btn-ghost" onClick={onDelete} disabled={!active}>Delete batch</button>
+      </div>
+    </div>
+  )
+}
+
+function describeBatch(b) {
+  const when = new Date(b.createdAt).toLocaleString()
+  if (b.origin?.kind === 'ai') return `AI screen: “${b.origin.question}”\n${when}`
+  if (b.origin?.kind === 'import') {
+    const src = (b.origin.sources || []).map((s) => s.name).join(', ')
+    return `Imported${src ? ` from ${src}` : ''}\n${when}`
+  }
+  return when
+}
+
+// A batch that came from a screen says what it was screened for, so a shortlist
+// is never an unexplained list of jobs weeks later.
+function ScreenNote({ batch }) {
+  const o = batch.origin
+  return (
+    <div className="ww-screen-note">
+      <strong>Screened from “{o.parentName}”</strong> for: {o.question}
+      <span className="ww-screen-fields">
+        judged on {o.fields.join(', ')}
+        {o.stats?.failed > 0 && ` · ${o.stats.failed} unanswered and left out`}
+      </span>
+    </div>
+  )
+}
 
 function EmptyState({ dragging, busy, onPick }) {
   return (
@@ -490,7 +623,7 @@ function Filters({ filters, facets, onChange, onReset, onHideClosed, busy }) {
         deadline ≥
         <input type="date" value={filters.deadlineFrom} onChange={onChange('deadlineFrom')} />
       </label>
-      <label className="ww-field" title="Minimum hourly wage in CAD, judged on the top of a range">
+      <label className="ww-field" title="Minimum hourly wage in CAD, judged on the bottom of a range">
         ≥ $
         <input
           type="number"
@@ -547,7 +680,7 @@ const COLUMNS = [
   ['deadline', 'Deadline', 'ww-col-deadline'],
 ]
 
-function PostingsTable({ rows, sort, onSort, selectedId, onSelect }) {
+function PostingsTable({ rows, sort, onSort, selectedId, onSelect, onRemove, judgments }) {
   return (
     <table className="ww-table">
       <thead>
@@ -563,6 +696,7 @@ function PostingsTable({ rows, sort, onSort, selectedId, onSelect }) {
               {sort.key === key && <span className="ww-caret">{sort.dir === 'asc' ? '▲' : '▼'}</span>}
             </th>
           ))}
+          <th className="ww-col-x" aria-label="Remove" />
         </tr>
       </thead>
       <tbody>
@@ -573,7 +707,12 @@ function PostingsTable({ rows, sort, onSort, selectedId, onSelect }) {
             onClick={() => onSelect(r.id)}
           >
             <td className="ww-col-id">{r.id}</td>
-            <td className="ww-col-title">{r.title || <em>untitled</em>}</td>
+            <td className="ww-col-title">
+              {r.title || <em>untitled</em>}
+              {judgments?.[r.id]?.reason && (
+                <span className="ww-row-reason">{judgments[r.id].reason}</span>
+              )}
+            </td>
             <td className="ww-col-org">{r.organization}</td>
             <td className="ww-col-city">{r.location.city}</td>
             <td className="ww-col-arr">{r.location.arrangement}</td>
@@ -586,6 +725,18 @@ function PostingsTable({ rows, sort, onSort, selectedId, onSelect }) {
             <td className="ww-col-num">{r.openings ?? ''}</td>
             <td className="ww-col-num">{r.applicants ?? ''}</td>
             <td className="ww-col-deadline">{r.deadline?.date ?? ''}</td>
+            <td className="ww-col-x">
+              <button
+                className="ww-remove"
+                // Without this the click also selects the row that is about to
+                // vanish, leaving the detail panel showing a posting the batch
+                // no longer contains.
+                onClick={(e) => { e.stopPropagation(); onRemove(r.id) }}
+                title="Remove from this batch (the posting itself is kept)"
+              >
+                ×
+              </button>
+            </td>
           </tr>
         ))}
       </tbody>
@@ -593,7 +744,7 @@ function PostingsTable({ rows, sort, onSort, selectedId, onSelect }) {
   )
 }
 
-function Detail({ posting: p }) {
+function Detail({ posting: p, reason }) {
   const loc = [p.location.city, p.location.province, p.location.country].filter(Boolean).join(', ')
   return (
     <div className="ww-detail-body">
@@ -601,6 +752,8 @@ function Detail({ posting: p }) {
       <div className="ww-detail-sub">
         {[p.organization, p.division].filter(Boolean).join(' · ')}
       </div>
+
+      {reason && <div className="ww-detail-reason">Kept because: {reason}</div>}
 
       <dl className="ww-facts">
         <Fact label="ID" value={p.id} />
