@@ -620,3 +620,25 @@
   padding: 9px 11px;
   margin-top: 4px;
 }
+
+/* ── bulk selection ── */
+.ww-col-check { width: 30px; text-align: center; }
+.ww-col-check input { cursor: pointer; }
+
+.ww-table tbody tr.ww-row--checked { background: #fdf6e3; }
+.ww-table tbody tr.ww-row--checked:hover { background: #f9eecd; }
+
+.ww-selbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 7px 16px;
+  background: var(--surface2);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.ww-selbar strong { font-variant-numeric: tabular-nums; }
+.ww-selbar-note { color: var(--text-muted); font-size: 11px; }

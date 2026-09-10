@@ -36,6 +36,11 @@ export default function WaterlooWorks({ user, nav, ai, onOpenAi }) {
   const [limit, setLimit] = useState(PAGE)
   const [dragging, setDragging] = useState(false)
   const [screening, setScreening] = useState(false)
+  // Ids ticked for bulk removal. Kept as a Set of ids rather than indices so it
+  // survives re-sorting and re-filtering underneath it.
+  const [checked, setChecked] = useState(() => new Set())
+  // Anchor for shift-click range selection, as a posting id.
+  const lastClicked = useRef(null)
   const fileInput = useRef(null)
   // Set while the file picker is open for "new batch from file" rather than
   // "import more", since one <input> serves both.
@@ -148,6 +153,8 @@ export default function WaterlooWorks({ user, nav, ai, onOpenAi }) {
   // ── batches ───────────────────────────────────────────────────────────────
   const switchBatch = (id) => {
     setSelectedId(null)
+    setChecked(new Set())
+    lastClicked.current = null
     setLimit(PAGE)
     persist(setActive(wsRef.current, id))
   }
@@ -165,7 +172,54 @@ export default function WaterlooWorks({ user, nav, ai, onOpenAi }) {
 
   const handleRemove = (id) => {
     if (selectedId === id) setSelectedId(null)
+    setChecked((c) => { const n = new Set(c); n.delete(id); return n })
     persist(removeFromBatch(wsRef.current, batch.id, [id]))
+  }
+
+  // Tick one row, or — with shift held — every row between it and the last one
+  // ticked, in the order currently on screen. Sorting by pay and shift-clicking
+  // a run is the whole point of having this.
+  const handleCheck = (id, shift) => {
+    setChecked((prev) => {
+      const next = new Set(prev)
+      const ids = visible.map((p) => p.id)
+      const from = shift && lastClicked.current ? ids.indexOf(lastClicked.current) : -1
+      const to = ids.indexOf(id)
+      if (from !== -1 && to !== -1 && from !== to) {
+        const [a, b] = from < to ? [from, to] : [to, from]
+        const on = !prev.has(id)
+        for (let i = a; i <= b; i++) on ? next.add(ids[i]) : next.delete(ids[i])
+      } else {
+        next.has(id) ? next.delete(id) : next.add(id)
+      }
+      return next
+    })
+    lastClicked.current = id
+  }
+
+  // The header box acts on everything the filters currently select, not just the
+  // rows rendered so far — otherwise "select all" would quietly mean "select the
+  // first 200".
+  const handleCheckAll = () => {
+    setChecked((prev) => {
+      const allOn = visible.length > 0 && visible.every((p) => prev.has(p.id))
+      if (allOn) return new Set()
+      return new Set(visible.map((p) => p.id))
+    })
+    lastClicked.current = null
+  }
+
+  const handleRemoveChecked = () => {
+    const ids = [...checked]
+    if (!ids.length) return
+    if (!confirm(
+      `Remove ${ids.length} posting${ids.length === 1 ? '' : 's'} from “${batch.name}”?\n\n` +
+      `They stay in every other batch that holds them, and can be brought back by re-importing.`
+    )) return
+    if (checked.has(selectedId)) setSelectedId(null)
+    setChecked(new Set())
+    lastClicked.current = null
+    persist(removeFromBatch(wsRef.current, batch.id, ids))
   }
 
   const handleClearAll = async () => {
@@ -467,6 +521,21 @@ export default function WaterlooWorks({ user, nav, ai, onOpenAi }) {
             </>
           )}
 
+          {checked.size > 0 && (
+            <div className="ww-selbar">
+              <strong>{checked.size}</strong> selected
+              <button className="btn-danger" onClick={handleRemoveChecked}>
+                Remove from “{batch.name}”
+              </button>
+              <button className="btn-ghost" onClick={() => { setChecked(new Set()); lastClicked.current = null }}>
+                Clear selection
+              </button>
+              <span className="ww-selbar-note">
+                Shift-click to select a range. Postings stay in other batches.
+              </span>
+            </div>
+          )}
+
           <div className="ww-body">
             <div className="ww-table-wrap">
               <PostingsTable
@@ -477,6 +546,10 @@ export default function WaterlooWorks({ user, nav, ai, onOpenAi }) {
                 onSelect={setSelectedId}
                 onRemove={handleRemove}
                 judgments={batch?.judgments}
+                checked={checked}
+                onCheck={handleCheck}
+                onCheckAll={handleCheckAll}
+                allChecked={visible.length > 0 && visible.every((p) => checked.has(p.id))}
               />
               {visible.length === 0 && (
                 <p className="ww-no-match">
@@ -702,11 +775,19 @@ const COLUMNS = [
   ['deadline', 'Deadline', 'ww-col-deadline'],
 ]
 
-function PostingsTable({ rows, sort, onSort, selectedId, onSelect, onRemove, judgments }) {
+function PostingsTable({ rows, sort, onSort, selectedId, onSelect, onRemove, judgments, checked, onCheck, onCheckAll, allChecked }) {
   return (
     <table className="ww-table">
       <thead>
         <tr>
+          <th className="ww-col-check">
+            <input
+              type="checkbox"
+              checked={!!allChecked}
+              onChange={onCheckAll}
+              title="Select everything the filters currently show"
+            />
+          </th>
           {COLUMNS.map(([key, label, cls]) => (
             <th
               key={key}
@@ -725,9 +806,21 @@ function PostingsTable({ rows, sort, onSort, selectedId, onSelect, onRemove, jud
         {rows.map((r) => (
           <tr
             key={r.id}
-            className={r.id === selectedId ? 'ww-row--selected' : undefined}
+            className={[
+              r.id === selectedId ? 'ww-row--selected' : '',
+              checked?.has(r.id) ? 'ww-row--checked' : '',
+            ].filter(Boolean).join(' ') || undefined}
             onClick={() => onSelect(r.id)}
           >
+            <td className="ww-col-check" onClick={(e) => e.stopPropagation()}>
+              <input
+                type="checkbox"
+                checked={!!checked?.has(r.id)}
+                // onClick carries shiftKey; onChange does not.
+                onClick={(e) => { e.stopPropagation(); onCheck(r.id, e.shiftKey) }}
+                onChange={() => {}}
+              />
+            </td>
             <td className="ww-col-id">{r.id}</td>
             <td className="ww-col-title">
               {r.title || <em>untitled</em>}
