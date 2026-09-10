@@ -24,7 +24,7 @@ import './WaterlooWorks.css'
 
 const PAGE = 200 // rows added per "show more" — full tables run to a few thousand
 
-export default function WaterlooWorks({ user, nav, ai, aiLoaded, onOpenAi }) {
+export default function WaterlooWorks({ user, nav, ai, onOpenAi }) {
   const [ws, setWs] = useState(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(null) // status line while parsing
@@ -45,9 +45,6 @@ export default function WaterlooWorks({ user, nav, ai, aiLoaded, onOpenAi }) {
   // flight, null otherwise. The AbortController is what the Stop button pulls.
   const [comp, setComp] = useState(null)
   const compAbort = useRef(null)
-  // Which batch the automatic run has already fired for, so it happens once per
-  // new import rather than on every render.
-  const autoRunFor = useRef(null)
 
   // The workspace in a ref, so callbacks that run across awaits always persist
   // the latest one rather than whatever was captured when they were created.
@@ -116,11 +113,13 @@ export default function WaterlooWorks({ user, nav, ai, aiLoaded, onOpenAi }) {
     await persist(next)
 
     const problems = [...bad, ...merged.skipped.map((s) => `${s.name}: ${s.reason}`)]
+    const unpriced = merged.postings.filter((p) => !p.hourlyCad).length
     setNotice({
       kind: problems.length ? 'warn' : 'ok',
       text:
         `Imported ${merged.read} records into “${created.name}” — ${created.ids.length} postings, ` +
         `${merged.duplicates} duplicate id${merged.duplicates === 1 ? '' : 's'} collapsed.` +
+        (unpriced ? `\n${unpriced} have no pay figure yet — use “Normalize pay” when you want it.` : '') +
         (problems.length ? '\n' + problems.join('\n') : ''),
     })
   }, [persist])
@@ -263,18 +262,11 @@ export default function WaterlooWorks({ user, nav, ai, aiLoaded, onOpenAi }) {
 
   const stopCompensation = () => compAbort.current?.abort()
 
-  // Run it automatically once a batch is on screen and a key is configured —
-  // "when it gets the jobs, normalize compensation". Keyed on the batch id so it
-  // fires once per new batch, not on every render, and never while a run is live.
-  useEffect(() => {
-    if (!batch || !aiLoaded || !hasAnyKey(ai)) return
-    if (compAbort.current) return
-    if (autoRunFor.current === batch.id) return
-    if (pendingCount(postings) === 0) return
-    autoRunFor.current = batch.id
-    runCompensation()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [batch?.id, aiLoaded, ai, postings, runCompensation])
+  // Normalization is deliberately manual. An import of 574 postings is ~48 AI
+  // requests and several minutes, which is not something to start on the user's
+  // behalf just because a key happens to be configured. The toolbar button
+  // carries the outstanding count, and the notice after an import points at it,
+  // so it stays discoverable without ever being automatic.
 
   // Abandon an in-flight run if the section is left, rather than letting it
   // write into a workspace nobody is looking at.

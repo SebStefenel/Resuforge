@@ -75,7 +75,7 @@ export default function Shell({ user }) {
   return (
     <>
       {view === 'ww'
-        ? <WaterlooWorks user={user} nav={nav} ai={ai} aiLoaded={aiLoaded} onOpenAi={() => setAiOpen(true)} />
+        ? <WaterlooWorks user={user} nav={nav} ai={ai} onOpenAi={() => setAiOpen(true)} />
         : <App user={user} nav={nav} />}
       {aiOpen && (
         <AiSettings
