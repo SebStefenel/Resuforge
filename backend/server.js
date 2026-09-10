@@ -229,6 +229,111 @@ app.post('/api/compile-all', requireAuth, async (req, res) => {
   await archive.finalize()
 })
 
+// ---------------------------------------------------------------------------
+// AI proxy (GLM only)
+// ---------------------------------------------------------------------------
+// Gemini is called straight from the browser: generativelanguage.googleapis.com
+// returns CORS headers, so there is nothing for a proxy to add. GLM's
+// international endpoint (api.z.ai) answers a preflight with no
+// access-control-allow-origin at all, so a browser blocks it outright — hence
+// this hop. Keys arrive per request and are never stored or logged here.
+//
+// Forwarding a caller-supplied URL is an SSRF primitive, so the host is checked
+// against a fixed allowlist rather than merely required to be https: a valid
+// Supabase session is easy to obtain (anyone can sign up), and without this the
+// endpoint would happily fetch the Fly metadata service or anything else on the
+// internal network. GLM_EXTRA_HOSTS exists for a self-hosted gateway.
+const AI_HOSTS = new Set([
+  'api.z.ai',
+  'open.bigmodel.cn',
+  ...(process.env.GLM_EXTRA_HOSTS || '').split(',').map(s => s.trim()).filter(Boolean),
+])
+
+const AI_TIMEOUT = 120000
+
+// Resolve a caller-supplied base URL to the exact URL we will POST to, or throw.
+// Exported for testing: this is the check that keeps the endpoint from being an
+// SSRF pivot, so it should be verifiable without standing up the whole server.
+function resolveAiTarget(baseUrl) {
+  const u = new URL(baseUrl) // throws on anything unparseable
+  if (u.protocol !== 'https:') throw new Error('must be https')
+  if (!AI_HOSTS.has(u.hostname)) throw new Error(`host not allowed: ${u.hostname}`)
+  // Tolerate a trailing slash, and a baseUrl that already names the endpoint.
+  const path = u.pathname.replace(/\/+$/, '')
+  return `${u.origin}${path.endsWith('/chat/completions') ? path : path + '/chat/completions'}`
+}
+
+module.exports.resolveAiTarget = resolveAiTarget
+
+app.post('/api/ai', requireAuth, async (req, res) => {
+  const { baseUrl, model, apiKey, messages, jsonMode, temperature } = req.body || {}
+
+  if (!apiKey) return res.status(400).json({ error: 'No apiKey provided' })
+  if (!model) return res.status(400).json({ error: 'No model provided' })
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return res.status(400).json({ error: 'No messages provided' })
+  }
+
+  let target
+  try {
+    target = resolveAiTarget(baseUrl)
+  } catch (e) {
+    return res.status(400).json({
+      error: `Invalid baseUrl: ${e.message}`,
+      allowedHosts: [...AI_HOSTS],
+    })
+  }
+
+  try {
+    const upstream = await fetch(target, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        ...(temperature == null ? {} : { temperature }),
+        ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
+      }),
+      signal: AbortSignal.timeout(AI_TIMEOUT),
+    })
+
+    const text = await upstream.text()
+
+    // Pass the upstream status straight through: the client distinguishes a
+    // quota wall from a bad key from a blip, and flattening them here would
+    // break the Gemini→GLM fallback decision.
+    if (!upstream.ok) {
+      return res.status(upstream.status).json({
+        error: `GLM returned HTTP ${upstream.status}`,
+        providerStatus: upstream.status,
+        body: text.slice(0, 2000),
+      })
+    }
+
+    let body
+    try {
+      body = JSON.parse(text)
+    } catch {
+      return res.status(502).json({ error: 'GLM returned a non-JSON body', body: text.slice(0, 2000) })
+    }
+
+    res.json({
+      text: body?.choices?.[0]?.message?.content ?? '',
+      usage: body?.usage ?? null,
+      finishReason: body?.choices?.[0]?.finish_reason ?? null,
+    })
+  } catch (e) {
+    const timedOut = e?.name === 'TimeoutError' || /timeout/i.test(String(e?.message))
+    res.status(timedOut ? 504 : 502).json({
+      error: timedOut ? `GLM did not respond within ${AI_TIMEOUT / 1000}s` : 'Could not reach GLM',
+      log: String(e?.message || e),
+    })
+  }
+})
+
 const PORT = process.env.PORT || 3001
 const server = app.listen(PORT, () => console.log(`ResuForge backend running on http://localhost:${PORT}`))
 

@@ -376,6 +376,14 @@ export const CSV_COLUMNS = [
   ['workTerm', (r) => r.workTerm && r.workTerm.raw],
   ['clusters', (r) => r.clusters.join('; ')],
   ['documents', (r) => r.application.documents.join('; ')],
+  // AI-normalized compensation. `hourlyCad` is the display string ("25.00",
+  // "25.00-30.00" or "NA"); min/max are broken out so a spreadsheet can sort and
+  // filter on them without parsing the range back apart.
+  ['hourlyCad', (r) => r.hourlyCad && r.hourlyCad.text],
+  ['hourlyCadMin', (r) => r.hourlyCad && r.hourlyCad.min],
+  ['hourlyCadMax', (r) => r.hourlyCad && r.hourlyCad.max],
+  ['hourlyCadBasis', (r) => r.hourlyCad && r.hourlyCad.basis],
+  ['hourlyCadNote', (r) => r.hourlyCad && r.hourlyCad.note],
 ]
 
 export function toCsv(rows) {
@@ -416,6 +424,8 @@ const HAYSTACK = (r) =>
     r.location.city, r.location.province, r.location.country, r.location.arrangement,
     r.summary, r.responsibilities, r.skills, r.compensation,
     r.levels.join(' '), r.clusters.join(' '),
+    // so "NA", or a note naming a currency we couldn't convert, is searchable
+    r.hourlyCad && r.hourlyCad.text, r.hourlyCad && r.hourlyCad.note,
   ]
     .filter(Boolean)
     .join(' ')
@@ -439,6 +449,7 @@ export const EMPTY_FILTERS = {
   cluster: '',
   deadlineFrom: '',
   minMonths: '',
+  minHourly: '',
 }
 
 /**
@@ -450,6 +461,7 @@ export function filterPostings(rows, filters) {
   const f = { ...EMPTY_FILTERS, ...filters }
   const terms = f.query.toLowerCase().split(/\s+/).filter(Boolean)
   const minMonths = f.minMonths === '' ? null : Number(f.minMonths)
+  const minHourly = f.minHourly === '' ? null : Number(f.minHourly)
 
   return rows.filter((r) => {
     if (f.arrangement && r.location.arrangement !== f.arrangement) return false
@@ -464,6 +476,12 @@ export function filterPostings(rows, filters) {
     if (minMonths != null && !Number.isNaN(minMonths)) {
       const m = r.duration && r.duration.months
       if (m == null || m < minMonths) return false
+    }
+    if (minHourly != null && !Number.isNaN(minHourly)) {
+      // Compare on the TOP of the range: a posting advertising 18-32/hr does meet
+      // a floor of 30, and judging it on its minimum would hide it.
+      const top = r.hourlyCad && r.hourlyCad.max
+      if (top == null || top < minHourly) return false
     }
     if (terms.length) {
       const h = haystack(r)
@@ -482,6 +500,8 @@ export const SORTS = {
   openings: (r) => r.openings,
   applicants: (r) => r.applicants,
   durationMonths: (r) => r.duration && r.duration.months,
+  // Sorted on the top of the range, matching how the minHourly filter reads it.
+  hourlyCad: (r) => (r.hourlyCad ? r.hourlyCad.max : null),
   id: (r) => Number(r.id) || 0,
 }
 

@@ -8,6 +8,8 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { supabase } from '../lib/supabaseClient'
 import { loadDataset, saveDataset, clearDataset } from '../lib/wwStore'
+import { hasAnyKey } from '../lib/ai'
+import { normalizeAll, pendingCount } from '../lib/compensation'
 import {
   mergeDocuments, buildReport, toCsv, toCleanJson, tally,
   filterPostings, sortPostings, EMPTY_FILTERS,
@@ -16,7 +18,7 @@ import './WaterlooWorks.css'
 
 const PAGE = 200 // rows added per "show more" — full tables run to a few thousand
 
-export default function WaterlooWorks({ user, nav }) {
+export default function WaterlooWorks({ user, nav, ai, aiLoaded, onOpenAi }) {
   const [dataset, setDataset] = useState(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(null) // status line while parsing
@@ -28,6 +30,14 @@ export default function WaterlooWorks({ user, nav }) {
   const [limit, setLimit] = useState(PAGE)
   const [dragging, setDragging] = useState(false)
   const fileInput = useRef(null)
+
+  // Compensation normalization: { done, total, failed, note } while a run is in
+  // flight, null otherwise. The AbortController is what the Stop button pulls.
+  const [comp, setComp] = useState(null)
+  const compAbort = useRef(null)
+  // Set once a run has been started for the dataset on screen, so the automatic
+  // run fires once per import rather than every time this component re-renders.
+  const autoRunFor = useRef(null)
 
   useEffect(() => {
     let cancelled = false
@@ -102,6 +112,85 @@ export default function WaterlooWorks({ user, nav }) {
     })
   }, [dataset, user.id])
 
+  // ── compensation normalization ────────────────────────────────────────────
+  // Sends each posting's compensation blurb to the AI and stores the equivalent
+  // hourly wage in CAD as `hourlyCad`. Batched, paced, cancellable, and
+  // resumable: postings that already carry a figure are skipped, so a cancelled
+  // or partly failed run picks up where it left off.
+  const runCompensation = useCallback(async ({ force = false } = {}) => {
+    if (!dataset || compAbort.current) return
+    const controller = new AbortController()
+    compAbort.current = controller
+    setComp({ done: 0, total: 0, failed: 0, note: 'starting…' })
+
+    try {
+      const { postings: next, stats } = await normalizeAll(ai, dataset.postings, {
+        signal: controller.signal,
+        force,
+        onNote: (note) => setComp((c) => (c ? { ...c, note } : c)),
+        // A run over 570 postings takes minutes, so results land on screen as they
+        // arrive and are checkpointed to IndexedDB periodically — a reload partway
+        // through keeps what the run already paid for.
+        //
+        // Not every batch, though: the dataset is a couple of megabytes, and
+        // writing all of it ~48 times would cost more than the AI calls. Every
+        // fifth batch, plus the final write after the loop, is enough.
+        //
+        // `sources`, `report` and `importedAt` can't change during a run, so
+        // rebuilding the record from the dataset captured at start is safe, and
+        // keeps this side effect out of the setState updater.
+        onProgress: (postings, st) => {
+          setComp({ done: st.done, total: st.total, failed: st.failed, note: null })
+          setDataset((d) => (d ? { ...d, postings } : d))
+          if (st.batches % 5 === 0) saveDataset(user.id, { ...dataset, postings })
+        },
+      })
+
+      const updated = { ...dataset, postings: next }
+      setDataset(updated)
+      await saveDataset(user.id, updated)
+
+      const used = Object.entries(stats.byProvider)
+        .filter(([k]) => k && k !== 'null')
+        .map(([k, n]) => `${n} via ${k}`)
+        .join(', ')
+      setNotice({
+        kind: stats.failed ? 'warn' : 'ok',
+        text:
+          `Compensation normalized for ${stats.done} postings` +
+          (used ? ` (${used})` : '') +
+          (stats.failed ? `, ${stats.failed} could not be read.` : '.') +
+          (stats.errors.length ? '\n' + [...new Set(stats.errors)].slice(0, 4).join('\n') : ''),
+      })
+    } catch (err) {
+      if (err?.name !== 'AbortError') {
+        setNotice({ kind: 'error', text: `Compensation normalization failed: ${err.message || err}` })
+      }
+    } finally {
+      compAbort.current = null
+      setComp(null)
+    }
+  }, [dataset, ai, user.id])
+
+  const stopCompensation = () => compAbort.current?.abort()
+
+  // Run it automatically once a dataset is on screen and a key is configured —
+  // "when it gets the jobs, normalize compensation". Keyed on importedAt so it
+  // fires once per import, not on every render, and never while a run is live.
+  useEffect(() => {
+    if (!dataset || !aiLoaded || !hasAnyKey(ai)) return
+    if (compAbort.current) return
+    if (autoRunFor.current === dataset.importedAt) return
+    if (pendingCount(dataset.postings) === 0) return
+    autoRunFor.current = dataset.importedAt
+    runCompensation()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dataset?.importedAt, aiLoaded, ai, dataset, runCompensation])
+
+  // Abandon an in-flight run if the section is left, rather than letting it
+  // write into a dataset nobody is looking at.
+  useEffect(() => () => compAbort.current?.abort(), [])
+
   const onDrop = (e) => {
     e.preventDefault()
     setDragging(false)
@@ -147,6 +236,7 @@ export default function WaterlooWorks({ user, nav }) {
     [postings, selectedId]
   )
 
+  const pending = useMemo(() => pendingCount(postings), [postings])
   const filtered = visible.length !== postings.length
   useEffect(() => { setLimit(PAGE) }, [filters, sort])
 
@@ -196,6 +286,21 @@ export default function WaterlooWorks({ user, nav }) {
               <button className="btn-ghost" onClick={() => fileInput.current?.click()}>
                 Import more…
               </button>
+              {comp ? (
+                <button className="btn-ghost" onClick={stopCompensation}>Stop AI</button>
+              ) : (
+                <button
+                  className="btn-ghost"
+                  onClick={() => (hasAnyKey(ai) ? runCompensation() : onOpenAi())}
+                  title={
+                    hasAnyKey(ai)
+                      ? 'Convert each posting\'s compensation text to an hourly CAD wage'
+                      : 'Add an AI key first'
+                  }
+                >
+                  {pending > 0 ? `Normalize pay (${pending})` : 'Normalize pay'}
+                </button>
+              )}
               <button
                 className="btn-ghost"
                 onClick={downloadJson}
@@ -229,6 +334,23 @@ export default function WaterlooWorks({ user, nav }) {
         <div className={`ww-notice ww-notice--${notice.kind}`}>
           <pre>{notice.text}</pre>
           <button className="ww-notice-close" onClick={() => setNotice(null)} title="Dismiss">×</button>
+        </div>
+      )}
+
+      {comp && (
+        <div className="ww-progress">
+          <div className="ww-progress-bar">
+            <div
+              className="ww-progress-fill"
+              style={{ width: comp.total ? `${Math.round((comp.done / comp.total) * 100)}%` : '0%' }}
+            />
+          </div>
+          <span className="ww-progress-text">
+            Normalizing pay {comp.done}/{comp.total || '…'}
+            {comp.failed > 0 && <> · {comp.failed} unreadable</>}
+            {comp.note && <span className="ww-progress-note"> · {comp.note}</span>}
+          </span>
+          <button className="btn-ghost" onClick={stopCompensation}>Stop</button>
         </div>
       )}
 
@@ -354,6 +476,18 @@ function Filters({ filters, facets, onChange, onReset, onHideClosed, busy }) {
         deadline ≥
         <input type="date" value={filters.deadlineFrom} onChange={onChange('deadlineFrom')} />
       </label>
+      <label className="ww-field" title="Minimum hourly wage in CAD, judged on the top of a range">
+        ≥ $
+        <input
+          type="number"
+          className="ww-months"
+          min="0"
+          step="1"
+          value={filters.minHourly}
+          onChange={onChange('minHourly')}
+        />
+        /hr
+      </label>
       <label className="ww-field" title="Minimum work-term length in months">
         ≥
         <input
@@ -392,6 +526,7 @@ const COLUMNS = [
   ['organization', 'Employer', 'ww-col-org'],
   ['city', 'City', 'ww-col-city'],
   ['arrangement', 'Arrangement', 'ww-col-arr'],
+  ['hourlyCad', '$/hr CAD', 'ww-col-pay'],
   ['durationMonths', 'Mo', 'ww-col-num'],
   ['openings', 'Open', 'ww-col-num'],
   ['applicants', 'Apps', 'ww-col-num'],
@@ -428,6 +563,11 @@ function PostingsTable({ rows, sort, onSort, selectedId, onSelect }) {
             <td className="ww-col-org">{r.organization}</td>
             <td className="ww-col-city">{r.location.city}</td>
             <td className="ww-col-arr">{r.location.arrangement}</td>
+            <td className="ww-col-pay">
+              {r.hourlyCad
+                ? <span className={r.hourlyCad.min == null ? 'ww-pay-na' : undefined}>{r.hourlyCad.text}</span>
+                : <span className="ww-pay-pending" title="Not normalized yet">—</span>}
+            </td>
             <td className="ww-col-num">{r.duration?.months ?? ''}</td>
             <td className="ww-col-num">{r.openings ?? ''}</td>
             <td className="ww-col-num">{r.applicants ?? ''}</td>
@@ -452,6 +592,7 @@ function Detail({ posting: p }) {
         <Fact label="ID" value={p.id} />
         <Fact label="Location" value={loc} />
         <Fact label="Arrangement" value={p.location.arrangement} />
+        <Fact label="Pay (CAD/hr)" value={p.hourlyCad && payDetail(p.hourlyCad)} />
         <Fact label="Deadline" value={p.deadline?.raw} />
         <Fact label="Work term" value={p.workTerm?.raw} />
         <Fact label="Duration" value={p.duration?.raw} />
@@ -496,6 +637,19 @@ function Detail({ posting: p }) {
       )}
     </div>
   )
+}
+
+// One readable line for the detail panel: the figure, then how it was arrived at.
+// Showing the provider matters for auditing — if a number looks wrong it's useful
+// to know which model produced it and what the source currency was.
+function payDetail(h) {
+  const how = [
+    h.basis,
+    h.currency && h.currency !== 'CAD' ? `stated in ${h.currency}` : null,
+    h.note || null,
+    h.provider ? `via ${h.provider}` : null,
+  ].filter(Boolean).join(' · ')
+  return how ? `${h.text} — ${how}` : h.text
 }
 
 function Fact({ label, value }) {

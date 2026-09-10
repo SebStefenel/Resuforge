@@ -418,3 +418,57 @@
     max-height: 45vh;
   }
 }
+
+/* ── compensation normalization ── */
+.ww-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.ww-progress-bar {
+  flex: 1;
+  min-width: 80px;
+  height: 6px;
+  background: var(--surface2);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.ww-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.25s ease;
+}
+
+.ww-progress-text {
+  color: var(--text-muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.ww-progress-note {
+  font-variant-numeric: normal;
+  opacity: 0.8;
+}
+
+.ww-col-pay {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  width: 104px;
+  text-align: right;
+}
+
+/* "NA" is a real answer — the posting named no figure — so it reads as muted
+   rather than missing. An em dash means nobody has asked the AI yet. */
+.ww-pay-na { color: var(--text-muted); }
+
+.ww-pay-pending {
+  color: var(--border);
+  font-weight: 700;
+}
