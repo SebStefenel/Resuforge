@@ -31,15 +31,29 @@ function openDb() {
   })
 }
 
+// Resolves when the transaction COMMITS, not when the request succeeds.
+//
+// Those are not the same moment, and the gap is where data goes missing: a put
+// fires onsuccess well before the transaction commits, and the commit can still
+// fail afterwards — QuotaExceededError aborts the transaction once every request
+// in it has already reported success. Resolving on the request meant a 3MB
+// workspace could report itself saved when nothing had been written, and the
+// "couldn't save" warning would never appear.
 function op(mode, fn) {
   return openDb().then(
     (db) =>
       new Promise((resolve, reject) => {
         const tx = db.transaction(STORE, mode)
+        let result
+        const done = (fn2) => (arg) => { try { db.close() } catch {} ; fn2(arg) }
+
         const req = fn(tx.objectStore(STORE))
-        req.onsuccess = () => resolve(req.result)
-        req.onerror = () => reject(req.error)
-        tx.oncomplete = () => db.close()
+        req.onsuccess = () => { result = req.result }
+        req.onerror = () => done(reject)(req.error)
+
+        tx.oncomplete = () => done(resolve)(result)
+        tx.onabort = () => done(reject)(tx.error || new Error('IndexedDB transaction aborted'))
+        tx.onerror = () => done(reject)(tx.error || new Error('IndexedDB transaction failed'))
       })
   )
 }

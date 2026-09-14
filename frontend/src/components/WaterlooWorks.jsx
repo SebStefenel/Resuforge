@@ -60,7 +60,11 @@ export default function WaterlooWorks({ user, nav, ai, onOpenAi }) {
     setWs(next)
     wsRef.current = next
     const ok = await saveWorkspace(user.id, next)
-    if (!ok) setNotice({ kind: 'warn', text: "Couldn't save to this browser — changes are in memory only." })
+    if (!ok) setNotice({
+      kind: 'warn',
+      text: "Couldn't save to this browser — this change is in memory only and will be lost on reload.\n" +
+            'Most likely the browser storage quota is full: delete a batch you no longer need, or Clear all and re-import.',
+    })
     return ok
   }, [user.id])
 
